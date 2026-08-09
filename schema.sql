@@ -21,9 +21,10 @@ CREATE TABLE IF NOT EXISTS products (
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_active ON products (is_active);
-CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
--- Nécessite l'extension pg_trgm pour la recherche floue par nom (optionnel) :
+
+-- Nécessaire pour la recherche floue par nom (opérateur gin_trgm_ops) :
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
 
 -- ============================================================
 -- CONVERSATIONS — une par numéro de téléphone WhatsApp
