@@ -53,6 +53,9 @@ services:
       # Autorise l'import du module natif 'crypto' dans les nodes Code
       # (nécessaire pour la vérification de signature HMAC des webhooks Meta)
       NODE_FUNCTION_ALLOW_BUILTIN: crypto
+
+      # Autorise l'accès à $env (variables d'environnement) depuis les nodes Code
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
