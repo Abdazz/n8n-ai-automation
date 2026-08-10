@@ -49,6 +49,10 @@ services:
 
       GENERIC_TIMEZONE: Africa/Ouagadougou
       TZ: Africa/Ouagadougou
+
+      # Autorise l'import du module natif 'crypto' dans les nodes Code
+      # (nécessaire pour la vérification de signature HMAC des webhooks Meta)
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
