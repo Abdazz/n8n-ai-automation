@@ -70,6 +70,7 @@ services:
 
       # --- Numéro personnel pour les notifications d'escalade humaine ---
       OWNER_WHATSAPP_NUMBER: ${OWNER_WHATSAPP_NUMBER}
+      N8N_PROXY_HOPS: "1"
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
