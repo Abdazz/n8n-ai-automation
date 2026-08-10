@@ -63,6 +63,13 @@ services:
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN}
       WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET}
+
+      # --- Mobile Money (infos statiques pour les instructions de paiement) ---
+      ORANGE_MONEY_NUMBER: ${ORANGE_MONEY_NUMBER}
+      ORANGE_MONEY_NAME: ${ORANGE_MONEY_NAME}
+
+      # --- Numéro personnel pour les notifications d'escalade humaine ---
+      OWNER_WHATSAPP_NUMBER: ${OWNER_WHATSAPP_NUMBER}
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
