@@ -86,7 +86,9 @@ services:
         condition: service_healthy
     environment:
       # NocoDB stocke ses propres métadonnées (tables préfixées nc_*) dans cette même base
-      NC_DB: "pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_DB}"
+      # Format JSON structuré plutôt que NC_DB (URL) — évite les soucis si le mot de passe
+      # contient des caractères spéciaux (&, ?, @, #, etc.) qui casseraient le parsing d'URL.
+      NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"${POSTGRES_USER}","password":"${POSTGRES_PASSWORD}","database":"${POSTGRES_DB}"}}'
       NC_PUBLIC_URL: https://${NOCODB_HOST}
     volumes:
       - nocodb_data:/usr/app/data
