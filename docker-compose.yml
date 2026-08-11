@@ -9,6 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./00-create-nocodb-db.sql:/docker-entrypoint-initdb.d/00-create-nocodb-db.sql:ro
       - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -88,7 +89,10 @@ services:
       # NocoDB stocke ses propres métadonnées (tables préfixées nc_*) dans cette même base
       # Format JSON structuré plutôt que NC_DB (URL) — évite les soucis si le mot de passe
       # contient des caractères spéciaux (&, ?, @, #, etc.) qui casseraient le parsing d'URL.
-      NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"${POSTGRES_USER}","password":"${POSTGRES_PASSWORD}","database":"${POSTGRES_DB}"}}'
+      # NocoDB stocke ses propres métadonnées (tables nc_*) dans une base DÉDIÉE
+      # (nocodb_meta), séparée des données applicatives (golden_market) — évite
+      # que les tables internes de NocoDB se mélangent avec products/orders/etc.
+      NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"${POSTGRES_USER}","password":"${POSTGRES_PASSWORD}","database":"nocodb_meta"}}'
       NC_PUBLIC_URL: https://${NOCODB_HOST}
 
       # Autorise NocoDB à ajouter une source de données (Add Data Source) pointant
