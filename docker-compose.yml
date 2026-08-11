@@ -85,8 +85,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # NocoDB stocke ses propres métadonnées dans une base séparée (schéma dédié)
-      NC_DB: "pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_DB}&schema=nocodb_meta"
+      # NocoDB stocke ses propres métadonnées (tables préfixées nc_*) dans cette même base
+      NC_DB: "pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_DB}"
       NC_PUBLIC_URL: https://${NOCODB_HOST}
     volumes:
       - nocodb_data:/usr/app/data
