@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS products (
     currency    TEXT NOT NULL DEFAULT 'XOF',
     stock_qty   INTEGER NOT NULL DEFAULT 0,
     is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-    image_url   TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -25,6 +24,25 @@ CREATE INDEX IF NOT EXISTS idx_products_active ON products (is_active);
 -- Nécessaire pour la recherche floue par nom (opérateur gin_trgm_ops) :
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
+
+-- ============================================================
+-- PRODUCT_IMAGES — un produit peut avoir plusieurs images
+-- ============================================================
+CREATE TABLE IF NOT EXISTS product_images (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id  UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    image_url   TEXT NOT NULL,
+    is_primary  BOOLEAN NOT NULL DEFAULT FALSE,   -- image principale à afficher en priorité
+    position    INTEGER NOT NULL DEFAULT 0,       -- ordre d'affichage
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images (product_id, position);
+
+-- Garantit qu'une seule image principale par produit
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_images_one_primary
+    ON product_images (product_id)
+    WHERE is_primary = TRUE;
 
 -- ============================================================
 -- CONVERSATIONS — une par numéro de téléphone WhatsApp
