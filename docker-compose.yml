@@ -70,11 +70,28 @@ services:
 
       # --- Numéro personnel pour les notifications d'escalade humaine ---
       OWNER_WHATSAPP_NUMBER: ${OWNER_WHATSAPP_NUMBER}
-      N8N_PROXY_HOPS: "1"
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
       - "127.0.0.1:5678:5678"   # exposé uniquement en local ; Apache gère le HTTPS public en reverse proxy
+    networks:
+      - golden_market_net
+
+  nocodb:
+    image: nocodb/nocodb:latest
+    container_name: golden_market_nocodb
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # NocoDB stocke ses propres métadonnées dans une base séparée (schéma dédié)
+      NC_DB: "pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_DB}&schema=nocodb_meta"
+      NC_PUBLIC_URL: https://${NOCODB_HOST}
+    volumes:
+      - nocodb_data:/usr/app/data
+    ports:
+      - "127.0.0.1:8090:8080"   # exposé uniquement en local ; Apache gère le HTTPS public en reverse proxy
     networks:
       - golden_market_net
 
@@ -85,3 +102,4 @@ networks:
 volumes:
   postgres_data:
   n8n_data:
+  nocodb_data:
