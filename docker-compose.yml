@@ -70,6 +70,9 @@ services:
 
       # --- Numéro personnel pour les notifications d'escalade humaine ---
       OWNER_WHATSAPP_NUMBER: ${OWNER_WHATSAPP_NUMBER}
+
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      STABILITY_API_KEY: ${STABILITY_API_KEY}
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
