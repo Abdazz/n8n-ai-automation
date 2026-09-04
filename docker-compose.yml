@@ -64,6 +64,9 @@ services:
       WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET}
 
+      # --- Confirmation de commande client (webhook Medusa -> n8n) ---
+      N8N_ORDER_CONFIRMATION_WEBHOOK_SECRET: ${N8N_ORDER_CONFIRMATION_WEBHOOK_SECRET}
+
       # --- Mobile Money (infos statiques pour les instructions de paiement) ---
       ORANGE_MONEY_NUMBER: ${ORANGE_MONEY_NUMBER}
       ORANGE_MONEY_NAME: ${ORANGE_MONEY_NAME}
