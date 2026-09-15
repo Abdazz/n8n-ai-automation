@@ -20,14 +20,20 @@
 - [x] `find_products`/`place_order` parlent directement au **Store API Medusa réel**
       (catalogue, paniers, commandes) — plus de duplication de catalogue en base n8n
 - [x] Recherche produit tolérante aux fautes de frappe (`/store/products-fuzzy-search`, pg_trgm)
-      **+ recherche sémantique de repli** (`browse_catalog`, § 2.6) quand la recherche floue échoue
+      **+ recherche sémantique de repli** (`browse_catalog`, § 2.6) quand la recherche floue échoue —
+      `browse_catalog` ne liste que les produits **disponibles** (filtre ajouté le 2026-09-15,
+      inutile de faire considérer au modèle un produit en rupture qu'il ne peut pas vendre)
 - [x] Garde-fou déterministe d'escalade : après 4 échecs `find_products` consécutifs dans la même
       conversation, le système notifie l'équipe et marque la conversation `escalated` sans dépendre
       du jugement du LLM (§ 2.6, colonne `conversations.consecutive_search_misses`)
-- [x] Photo envoyée par le client : décrite automatiquement (vision, OpenAI `gpt-4o-mini`, crédential
-      déjà existante) et injectée dans `message_text` avant que l'IA ne la lise (§ 2.3bis) — **déployé,
-      dégradation propre vérifiée en conditions réelles, mais jamais testé avec une vraie photo
-      WhatsApp** (un media id ne peut pas être simulé par webhook signé, voir § 2.3bis)
+- [x] **Photo, vidéo et message vocal envoyés par le client tous compris automatiquement** avant que
+      l'IA ne lise le message (§ 2.3bis) : photo décrite (OpenAI `gpt-4o-mini`, vision), vidéo décrite
+      *son compris* (Google Gemini `gemini-3.6-flash`, comprend nativement l'image et l'audio de la
+      vidéo), message vocal transcrit (OpenAI Whisper `whisper-1`) — crédentials déjà existantes dans
+      ce n8n, aucune nouvelle à créer. **Déployé, dégradation propre vérifiée en conditions réelles sur
+      les 3 types (media id fictif → repli sur le texte de repli existant, jamais de crash), mais
+      jamais testé avec un vrai média WhatsApp** (un media id ne peut pas être simulé par webhook
+      signé, voir § 2.3bis)
 - [x] Paiement : Cash on Delivery (Ouagadougou uniquement), Orange Money, Moov Money — instructions
       générées dynamiquement selon le `provider_id` de la commande Medusa
 - [x] Confirmation de commande WhatsApp automatique (workflow séparé, déclenché par un webhook
@@ -66,13 +72,14 @@
    l'IA parcourt tout le catalogue et fait elle-même le rapprochement sémantique/phonétique. Ça
    reste un pis-aller (le catalogue doit rester petit pour tenir dans un prompt), pas une vraie
    recherche sémantique par embeddings — suffisant pour l'échelle actuelle (~40 produits).
-4. **L'agent ne traite aucun lien externe (Facebook/Instagram/etc.) partagé par le client.**
-   Reste un vrai problème sans solution générale : Meta bloque le scraping non authentifié de ses
-   propres contenus, donc résoudre un lien organique (pas une pub) n'est pas réalisable de façon
-   fiable. Seul le cas d'une pub Click-to-WhatsApp est couvert (via `referral`, anomalie n°2). Une
-   photo envoyée directement, elle, est maintenant traitée (voir vision, § 2.3bis) — le vrai gain
-   pratique pour ce cas d'usage est probablement de guider le client vers "envoie une photo" plutôt
-   que "envoie le lien" dans le prompt, pas encore fait.
+4. ~~L'agent ne traite aucun lien externe (Facebook/Instagram/etc.) partagé par le client.~~
+   **Partiellement atténué le 2026-09-15.** Reste un vrai problème sans solution générale pour la
+   résolution du lien lui-même : Meta bloque le scraping non authentifié de ses propres contenus,
+   donc résoudre un lien organique (pas une pub) n'est pas réalisable de façon fiable. Seul le cas
+   d'une pub Click-to-WhatsApp est couvert (via `referral`, anomalie n°2). En revanche, une photo,
+   vidéo ou message vocal envoyé directement est maintenant compris (§ 2.3bis) — et le prompt
+   système guide maintenant explicitement le client vers ça quand il partage un lien (voir § 2.5,
+   règle ajoutée le 2026-09-15) plutôt que de simplement dire "je ne peux pas ouvrir ce lien".
 5. ~~Pas de garde-fou déterministe sur l'escalade humaine.~~ **Corrigé le 2026-09-15** : voir
    `conversations.consecutive_search_misses` et le tool `find_products` (§ 2.6). Testé en
    conditions réelles (4 échecs consécutifs simulés) : aucun crash, comportement de repli correct
@@ -244,50 +251,83 @@ Meta quand disponible (expression étendue, même node) :
 Absent de `referral` → comportement strictement identique à avant. Voir Anomalie n°2 (corrigée)
 en tête du guide.
 
-### 2.3bis Photo envoyée par le client (vision)
+### 2.3bis Photo, message vocal, vidéo envoyés par le client (compréhension multimodale)
 
-Branche insérée **après** `Edit Fields`, **avant** `SQL_query_1` — node **If** `Is Image Message`
-(condition : `messages[0].image` présent, référencé via `$('Webhook1')`, pas `$json`, pour ne pas
-dépendre de si `Edit Fields` préserve ou non les champs bruts) :
+Trois branches indépendantes insérées **après** `Edit Fields`, **avant** `SQL_query_1`, chaînées en
+cascade de nodes **If** (`Is Image Message` → `Is Audio Message` → `Is Video Message`, chacun
+référencé via `$('Webhook1')`, pas `$json`, pour ne pas dépendre de si `Edit Fields` préserve ou non
+les champs bruts) :
 
 ```
 Edit Fields → Is Image Message
-                 true  → Get Media URL → Download Media → Describe Image (Vision) → Override Message Text With Vision → SQL_query_1
-                 false → SQL_query_1   (connexion directe, pas de node intermédiaire)
+                 true  → [branche image, voir plus bas] → SQL_query_1
+                 false → Is Audio Message
+                            true  → [branche audio, voir plus bas] → SQL_query_1
+                            false → Is Video Message
+                                       true  → [branche vidéo, voir plus bas] → SQL_query_1
+                                       false → SQL_query_1 (connexion directe)
 ```
 
-Les deux branches ciblent le même node suivant (`SQL_query_1`) — pattern natif n8n valide (une
-seule branche s'exécute réellement par item), pas besoin de node `Merge`.
+Toutes les branches ciblent le même node final (`SQL_query_1`) — pattern natif n8n valide (une seule
+branche s'exécute réellement par item), pas besoin de node `Merge`.
 
-- **Get Media URL** (`GET https://graph.facebook.com/v20.0/{{ image.id }}`, Bearer
-  `WHATSAPP_ACCESS_TOKEN`) résout l'id média WhatsApp en URL de téléchargement temporaire.
-- **Download Media** (`GET {{ $json.url }}`, même Bearer, `options.response.response.responseFormat:
-  "file"`) télécharge les octets réels ; n8n les stocke en binaire (base64 déjà accessible via
-  `$binary.data.data`).
-- **Describe Image (Vision)** : `POST https://api.openai.com/v1/chat/completions`,
-  `authentication: "predefinedCredentialType"` + `nodeCredentialType: "openAiApi"` (réutilise la
-  credential **"OpenAI account"** déjà existante dans ce n8n — utilisée par ailleurs pour
-  `AI News Curator`, aucune nouvelle clé nécessaire), modèle `gpt-4o-mini`, image envoyée en
-  `data:{mime_type};base64,{données}`. Retourne une description courte orientée identification
-  produit.
-- **Override Message Text With Vision** (Code) : remplace `message_text` (celui calculé par
-  `Edit Fields`) par `"[Photo envoyée par le client — description automatique : {description}]"`.
-  L'IA reçoit ensuite cette description **comme si c'était le texte du client** — aucun changement
-  nécessaire côté prompt système ou tools, `find_products`/`browse_catalog` fonctionnent normalement
-  dessus.
+**Schéma commun aux trois branches** : `Get Media URL` (`GET
+https://graph.facebook.com/v20.0/{{ media.id }}`, Bearer `WHATSAPP_ACCESS_TOKEN`) résout l'id média
+WhatsApp en URL de téléchargement temporaire → `Download Media` (`GET {{ $json.url }}`, même Bearer,
+`options.response.response.responseFormat: "file"`) télécharge les octets réels (n8n les stocke en
+binaire, base64 déjà accessible via `$binary.data.data`) → un node "Describe" spécifique au type de
+média (voir ci-dessous) → un node "Override Message Text" (Code) qui remplace `message_text` (celui
+calculé par `Edit Fields`) par une description/transcription préfixée. L'IA reçoit ensuite ce texte
+**comme si c'était ce que le client avait écrit** — aucun changement nécessaire côté prompt système
+ou tools, `find_products`/`browse_catalog` fonctionnent normalement dessus.
 
-**Défensif à chaque étape** (`Get Media URL`, `Download Media`, `Describe Image` ont tous
-`onError: "continueErrorOutput"` **au niveau racine du node**, pas dans `parameters` — voir
-"Piège critique" en § 2.6) : toute erreur (media id invalide/expiré, API OpenAI en panne, timeout)
-route vers **Vision Error Fallback**, qui renvoie simplement `$('Edit Fields').item.json` intact
-→ le pipeline retombe sur le texte "[Image reçue]" existant, jamais de crash.
+- **Branche image** — `Describe Image (Vision)` : `POST
+  https://api.openai.com/v1/chat/completions`, `authentication: "predefinedCredentialType"` +
+  `nodeCredentialType: "openAiApi"` (credential **"OpenAI account"** déjà existante dans ce n8n,
+  utilisée par ailleurs par `AI News Curator`), modèle `gpt-4o-mini`, image en
+  `data:{mime_type};base64,{données}`. Préfixe : `"[Photo envoyée par le client — description
+  automatique : {description}]"`.
+- **Branche audio** — `Transcribe Audio (Whisper)` : `POST
+  https://api.openai.com/v1/audio/transcriptions`, même credential OpenAI, `contentType:
+  "multipart-form-data"`, `model: "whisper-1"`, fichier envoyé via un paramètre de corps
+  `parameterType: "formBinaryData"` référençant la propriété binaire `data`. Réponse `{text: "..."}`.
+  Préfixe : `"[Message vocal envoyé par le client — transcription automatique : {transcript}]"`.
+- **Branche vidéo** — `Describe Video (Vision)` : `POST
+  https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
+  `authentication: "predefinedCredentialType"` + `nodeCredentialType: "googlePalmApi"` (credential
+  **"Google Gemini(PaLM) Api account"** déjà existante dans ce n8n, jusque-là utilisée seulement par
+  des workflows inactifs — **validité reconfirmée en isolation le 2026-09-15** avant de la brancher
+  en prod, voir note modèle ci-dessous). Corps : `{contents:[{parts:[{inline_data:{mime_type,
+  data}}, {text: "..."}]}]}` — Gemini traite nativement l'image **et la bande son** de la vidéo en un
+  seul appel (pas besoin d'extraire une frame ou l'audio séparément, n8n ne peut pas faire tourner
+  ffmpeg de toute façon). Réponse : `candidates[0].content.parts[0].text`. Limite Gemini : 20 Mo max
+  par requête (payload base64 inclus) — une vidéo WhatsApp plus lourde fait simplement échouer cette
+  étape, repli automatique sur `"[Vidéo reçue]"` (voir Défensif ci-dessous), pas un problème bloquant
+  mais une vidéo longue/HD ne sera pas comprise. Préfixe : `"[Vidéo envoyée par le client —
+  description automatique : {description}]"`.
+
+⚠️ **Nom de modèle Gemini à surveiller** : `gemini-2.5-flash` (choix initial) rejette déjà les
+nouveaux appels au 2026-09-15 (`404 - "This model ... is no longer available to new users"`, message
+d'erreur de Google recommandant explicitement `gemini-3.6-flash`, confirmé en le testant en
+isolation avant déploiement). Les modèles Gemini se déprécient vite — si `Describe Video (Vision)`
+se met à échouer systématiquement, vérifier d'abord si le nom de modèle est toujours valide
+(`https://ai.google.dev/gemini-api/docs/models`) avant de chercher ailleurs.
+
+**Défensif à chaque étape, dans les trois branches** (`Get Media URL`, `Download Media`, `Describe
+*` ont tous `onError: "continueErrorOutput"` **au niveau racine du node**, pas dans `parameters` —
+voir "Piège critique" en § 2.6) : toute erreur (media id invalide/expiré, API en panne, timeout,
+vidéo trop lourde) route vers **Vision Error Fallback** (node partagé par les trois branches, malgré
+son nom hérité de l'implémentation image initiale), qui renvoie simplement
+`$('Edit Fields').item.json` intact → le pipeline retombe sur le texte de repli existant
+(`"[Image reçue]"` / `"[Message vocal reçu]"` / `"[Vidéo reçue]"`), jamais de crash.
 
 ⚠️ **Pas testable de bout en bout par webhook signé** : un id média WhatsApp est une référence
-serveur à un vrai fichier uploadé, impossible à simuler avec `curl`. Vérifié uniquement : (a) avec
-un id fictif → `Get Media URL` échoue en 400, la branche d'erreur route bien vers le texte de repli
-existant, aucun crash (test réel le 2026-09-15) ; (b) structure JSON validée (connexions, pas de
-node orphelin). **Jamais vérifié avec une vraie photo envoyée par un vrai client** — à faire au
-premier cas réel, ou en demandant au propriétaire d'envoyer une photo de test depuis son téléphone.
+serveur à un vrai fichier uploadé, impossible à simuler avec `curl`. Vérifié pour les trois branches
+avec un id fictif → échec dès `Get Media URL`, repli propre confirmé, aucun crash (tests réels du
+2026-09-15). Credential Gemini validée séparément en isolation (requête texte simple hors pipeline
+client, réponse "OK" reçue) avant d'être branchée en prod. **Jamais vérifié avec un vrai média
+WhatsApp** (photo, vidéo ou message vocal réel envoyé par un vrai client) — à faire au premier cas
+réel, ou en demandant au propriétaire un test depuis son téléphone pour chacun des trois types.
 
 ### 2.4 Postgres — conversation + historique
 
