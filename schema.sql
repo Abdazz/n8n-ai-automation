@@ -54,7 +54,14 @@ CREATE TABLE IF NOT EXISTS conversations (
     status          TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active', 'closed', 'escalated')),
     last_message_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Garde-fou déterministe d'escalade (2026-09-15) : nombre de recherches
+    -- find_products consécutives sans résultat pour cette conversation.
+    -- Incrémenté par le tool find_products à chaque résultat vide, remis à
+    -- zéro dès qu'une recherche aboutit. Au-delà du seuil (voir tool
+    -- find_products), l'escalade vers un humain est déclenchée par le
+    -- workflow lui-même, pas par le jugement du LLM à chaque tour.
+    consecutive_search_misses INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (phone_number);

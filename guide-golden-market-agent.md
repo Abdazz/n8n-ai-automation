@@ -1,275 +1,294 @@
 # Golden Market — Agent IA WhatsApp — Guide de construction
 
+> **Réécrit le 2026-09-15.** La version précédente décrivait l'architecture initiale
+> (tools SQL directs sur `public.products`/`orders` dans la base `golden_market`), remplacée
+> en production début septembre 2026 par une intégration directe au Store/Admin API Medusa.
+> Ce document reflète l'état réel du workflow n8n de prod à cette date (vérifié par export
+> direct : `n8n export:workflow --all` sur le conteneur `golden_market_n8n`, VPS
+> `admin@144.91.110.105`). Si un futur changement de workflow le rend à nouveau périmé,
+> se fier à `medusa-golden-market/HANDOFF.md` (journal de session à jour en continu) plutôt
+> qu'à ce guide seul, et le remettre à jour dans la foulée.
+
 ## État actuel ✅
 
-- [x] VPS avec Docker + Docker Compose
-- [x] Stack déployée : Postgres + n8n (Apache en reverse proxy, SSL via certbot)
-- [x] Accès à l'éditeur n8n sur `https://n8n.golden-market.co`
-- [x] Schéma SQL en place (`products`, `conversations`, `messages`, `orders`)
-- [x] Credential Postgres créé et testé dans n8n
-- [x] Credential Anthropic créé dans n8n
-- [x] Webhook GET (vérification Meta) + POST (réception messages) construits
-- [x] Extraction des données + vérification de signature Meta
-- [x] Historique de conversation (lecture Postgres) branché à l'AI Agent
-- [x] AI Agent configuré (System Prompt + Chat Model Anthropic)
-- [x] Les 6 tools construits et testés : `check_stock`, `get_price`, `create_order`, `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`
-- [x] Notification WhatsApp d'escalade humaine confirmée fonctionnelle (message reçu en réel)
-- [x] Envoi de la réponse au client (3.6) + sauvegarde du tour de conversation (3.7)
-- [x] Fallback Groq (`openai/gpt-oss-120b`) configuré sur le AI Agent
-- [x] **Workflow publié et testé de bout en bout avec un vrai message WhatsApp — réponse reçue avec succès** 🎉
-- [x] Support multi-images en base via la table `product_images` (migration appliquée en prod)
+- [x] Stack déployée : Postgres (`golden_market`) + n8n, VPS, Apache en reverse proxy (SSL certbot)
+- [x] Webhook GET (vérification Meta) + POST (réception messages, signature HMAC sur le corps brut)
+- [x] Historique de conversation (Postgres `conversations`/`messages`) branché à l'AI Agent
+- [x] AI Agent configuré (system prompt + modèle Anthropic + fallback Groq)
+- [x] **6 tools actifs**, tous testés en production : `find_products`, `browse_catalog`,
+      `place_order`, `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`
+- [x] `find_products`/`place_order` parlent directement au **Store API Medusa réel**
+      (catalogue, paniers, commandes) — plus de duplication de catalogue en base n8n
+- [x] Recherche produit tolérante aux fautes de frappe (`/store/products-fuzzy-search`, pg_trgm)
+      **+ recherche sémantique de repli** (`browse_catalog`, § 2.6) quand la recherche floue échoue
+- [x] Garde-fou déterministe d'escalade : après 4 échecs `find_products` consécutifs dans la même
+      conversation, le système notifie l'équipe et marque la conversation `escalated` sans dépendre
+      du jugement du LLM (§ 2.6, colonne `conversations.consecutive_search_misses`)
+- [x] Photo envoyée par le client : décrite automatiquement (vision, OpenAI `gpt-4o-mini`, crédential
+      déjà existante) et injectée dans `message_text` avant que l'IA ne la lise (§ 2.3bis) — **déployé,
+      dégradation propre vérifiée en conditions réelles, mais jamais testé avec une vraie photo
+      WhatsApp** (un media id ne peut pas être simulé par webhook signé, voir § 2.3bis)
+- [x] Paiement : Cash on Delivery (Ouagadougou uniquement), Orange Money, Moov Money — instructions
+      générées dynamiquement selon le `provider_id` de la commande Medusa
+- [x] Confirmation de commande WhatsApp automatique (workflow séparé, déclenché par un webhook
+      sortant du backend Medusa à la création de commande)
+- [x] Escalade humaine (template WhatsApp `escalation_alert`) — **template créé et approuvé le
+      2026-09-15** (voir Anomalie n°6 : il n'existait pas du tout avant cette date, malgré ce que
+      disait ce guide)
+- [x] Visualiseur de conversations WhatsApp en lecture seule dans l'admin Medusa
+      (`medusa-golden-market`, `/app/whatsapp-conversations`)
+- [x] Synchro catalogue Medusa → Meta Commerce Catalog opérationnelle (pubs dynamiques
+      Facebook/Instagram, catalogue natif WhatsApp) — voir `medusa-golden-market/HANDOFF.md`
 
-## Ce qu'il reste à faire
+## ⚠️ Anomalies connues (état au 2026-09-15, n°2/3/5/6 corrigées, n°1 délibérément en attente)
 
-1. **Question ouverte — gestion du catalogue produits.** Aucun outil d'admin ne la gère à ce jour : la
-   saisie et la mise à jour des produits (`products`, `product_images`) se font en SQL via `psql`.
-   À trancher : outil d'admin, formulaires n8n, ou on reste en SQL.
-2. Remplacer les produits d'exemple par le vrai catalogue Golden Market
-3. Passer en revue la checklist sécurité avant mise en prod (section 5)
-4. Corriger le warning `X-Forwarded-For` / `trust proxy` (ajouter `N8N_PROXY_HOPS: "1"` au service n8n) — non bloquant mais à faire
-5. Envisager l'App Review Meta si besoin de contacter des numéros au-delà des 5 testeurs autorisés en mode développement
-6. Limite connue non corrigée : `check_stock`/`get_price` avec `product_name` vide retournent tous les produits (`ILIKE '%%'`) — à corriger si des faux positifs apparaissent en usage réel
+1. **Le modèle IA principal de l'AI Agent est Groq (`openai/gpt-oss-120b`), pas Claude — délibérément,
+   pour le moment.** Dans le node `AI Agent` du workflow `Golden Market Sales Automation Workflow`
+   (`i6KGA9BvK9unjxxj`), la connexion `ai_languageModel` a `Groq Chat Model` en **index 0**
+   (principal) et `Anthropic Chat Model` (`claude-sonnet-5`) en **index 1** (fallback) — c'est
+   l'inverse de l'intention d'origine (voir § Fallback multi-provider plus bas). Groq est un
+   modèle open-weight nettement moins fiable en suivi d'instructions et en reformulation d'appel
+   de tool (incident documenté ci-dessous, § Historique des correctifs, 2026-09-07) et probable
+   cause principale des retours négatifs sur la qualité de conversation. **Testé en sens inverse le
+   2026-09-15 (Claude en principal) puis annulé le jour même : le propriétaire n'avait pas de
+   crédit Anthropic disponible, ce qui aurait fait échouer le premier appel à chaque tour.**
+   Ne réinverser qu'après avoir vérifié que du crédit Anthropic est disponible — voir
+   `medusa-golden-market/HANDOFF.md`, entrée du 2026-09-15, pour la procédure (export/import CLI
+   `n8n export:workflow`/`import:workflow` + `update:workflow --active=true` + redémarrage du
+   conteneur `golden_market_n8n`, nécessaire pour que le changement s'applique réellement au
+   process en cours).
+2. ~~Aucune extraction du champ `referral` de Meta.~~ **Corrigé le 2026-09-15.**
+   `message_text` (node `Edit Fields`) préfixe maintenant le message avec le contexte
+   pub/catalogue (`headline`, `body`, `source_url`) quand `messages[0].referral` est présent —
+   voir § 2.3. Vérifié en conditions réelles (webhook signé, contexte bien exploité par l'IA).
+3. ~~Recherche produit tolérante aux fautes, pas aux synonymes/écarts lexicaux.~~ **Atténué le
+   2026-09-15** par le tool `browse_catalog` (§ 2.6) : quand `find_products` échoue deux fois,
+   l'IA parcourt tout le catalogue et fait elle-même le rapprochement sémantique/phonétique. Ça
+   reste un pis-aller (le catalogue doit rester petit pour tenir dans un prompt), pas une vraie
+   recherche sémantique par embeddings — suffisant pour l'échelle actuelle (~40 produits).
+4. **L'agent ne traite aucun lien externe (Facebook/Instagram/etc.) partagé par le client.**
+   Reste un vrai problème sans solution générale : Meta bloque le scraping non authentifié de ses
+   propres contenus, donc résoudre un lien organique (pas une pub) n'est pas réalisable de façon
+   fiable. Seul le cas d'une pub Click-to-WhatsApp est couvert (via `referral`, anomalie n°2). Une
+   photo envoyée directement, elle, est maintenant traitée (voir vision, § 2.3bis) — le vrai gain
+   pratique pour ce cas d'usage est probablement de guider le client vers "envoie une photo" plutôt
+   que "envoie le lien" dans le prompt, pas encore fait.
+5. ~~Pas de garde-fou déterministe sur l'escalade humaine.~~ **Corrigé le 2026-09-15** : voir
+   `conversations.consecutive_search_misses` et le tool `find_products` (§ 2.6). Testé en
+   conditions réelles (4 échecs consécutifs simulés) : aucun crash, comportement de repli correct
+   tant que le template `escalation_alert` n'était pas encore approuvé (anomalie n°6).
+6. **Découverte le 2026-09-15 : le template WhatsApp `escalation_alert` n'existait pas du tout sur
+   le compte Meta** (`GET /{waba_id}/message_templates` ne listait que
+   `order_confirmation_from_whatsapp`, `order_confirmation_from_website`, `hello_world`), alors que
+   ce guide (dans sa version précédente) et le code des tools `escalate_to_human`/
+   `mark_payment_reported` le référencaient comme existant depuis le tout début du projet.
+   **Conséquence réelle en prod, potentiellement depuis le lancement** : chaque fois qu'un client
+   demandait un humain ou signalait un paiement, l'appel à l'API Meta échouait, et comme aucun des
+   deux tools n'avait de gestion d'erreur, **le client ne recevait alors AUCUNE réponse** (le node
+   `AI Agent` plante entièrement si un de ses tools lève une exception non interceptée — vérifié en
+   conditions réelles le 2026-09-15, voir § 2.6 "Piège critique"). Template recréé via l'API Meta
+   (`POST /{waba_id}/message_templates`, catégorie UTILITY, français) et approuvé ; `escalate_to_human`
+   et `mark_payment_reported` rendus défensifs (`onError` au bon endroit, voir Piège critique) pour
+   qu'une panne similaire ne puisse plus jamais couper la réponse au client, quelle qu'en soit la
+   cause future.
 
 ---
 
 ## 1. Configuration WhatsApp Cloud API (Meta)
 
-### 1.1 Créer le compte développeur et l'app
+Section inchangée depuis la mise en place initiale — voir la configuration réelle dans
+**Meta Business Suite** (compte du propriétaire) plutôt que de la reconstruire ici : app
+`Golden Market Bot`, Phone Number ID + WABA + token système permanent (scopes
+`whatsapp_business_messaging`, `whatsapp_business_management`, `catalog_management`), webhook
+`https://n8n.golden-market.co/webhook/whatsapp` avec champ `messages` souscrit.
 
-1. Va sur [developers.facebook.com](https://developers.facebook.com) et connecte-toi/inscris-toi.
-2. **My Apps → Create App → Business** (choisis le type "Business").
-3. Donne un nom (ex: `Golden Market Bot`), associe-le à ton **Meta Business Account** (crée-en un si tu n'en as pas — vérification d'identité peut prendre 1 à 3 jours).
-4. Dans le dashboard de l'app, ajoute le produit **WhatsApp**.
+Le jeton WhatsApp actuel (`WHATSAPP_ACCESS_TOKEN`, `.env` du VPS) a été régénéré le 2026-09-13
+lors de la mise en place de la synchro catalogue Meta — il sert désormais **aussi** de
+`META_CATALOG_ACCESS_TOKEN` côté backend Medusa (scopes `whatsapp_business_management` +
+`catalog_management` sur le même system user). Toute régénération de ce jeton touche donc les
+deux systèmes ; coordonner les deux mises à jour.
 
-### 1.2 Récupérer les identifiants
-
-Dans **WhatsApp → API Setup** :
-
-| Élément | Où le trouver | À noter |
-|---|---|---|
-| **Phone Number ID** | Section "Send and receive messages" | ex: `123456789012345` |
-| **WhatsApp Business Account ID (WABA)** | Même section | ex: `987654321098765` |
-| **Token temporaire** | Bouton "Generate access token" | valable 24h — à remplacer par un token permanent (étape suivante) |
-
-### 1.3 Générer un token permanent (System User Token)
-
-Le token temporaire expire en 24h — inutilisable en prod.
-
-1. Va dans **Meta Business Suite → Paramètres de l'entreprise → Utilisateurs → Utilisateurs système**.
-2. Crée un utilisateur système (rôle **Admin**).
-3. **Ajouter des actifs** → sélectionne ton app WhatsApp → coche les permissions.
-4. **Générer un nouveau token** :
-   - Sélectionne l'app
-   - Coche les scopes : `whatsapp_business_messaging`, `whatsapp_business_management`
-   - Durée : **Never expire** si disponible, sinon note la date d'expiration pour renouveler à temps
-5. Copie ce token — **il ne sera affiché qu'une seule fois**.
-
-### 1.4 Enregistrer ton numéro WhatsApp Business
-
-- Si ton numéro est déjà actif sur l'app WhatsApp Business classique, tu devras le **migrer** vers Cloud API (Meta te guide dans l'interface — attention, ça déconnecte l'app mobile classique de ce numéro).
-- Vérifie le numéro par SMS/appel dans l'interface **API Setup**.
-
-### 1.5 Configurer le Verify Token (webhook)
-
-Invente une chaîne secrète quelconque, ex : `golden_market_verify_2026_xK9pL`. Note-la — tu en auras besoin à l'étape 1.6 et dans n8n.
-
-### 1.6 Configurer le Webhook dans Meta
-
-Dans **WhatsApp → Configuration → Webhook** :
-
-- **Callback URL** : `https://n8n.golden-market.co/webhook/whatsapp` *(l'URL exacte dépendra du nom que tu donnes au node Webhook dans n8n — on la crée à l'étape 3)*
-- **Verify Token** : la chaîne choisie en 1.5
-- **Champs à souscrire (Webhook fields)** : coche au minimum `messages`
-
-⚠️ Tu ne pourras valider cette étape qu'**après** avoir créé le node Webhook dans n8n (étape 3.1) — Meta envoie une requête `GET` de vérification que ton workflow doit savoir répondre.
-
-### 1.7 Ajouter les valeurs dans ton `.env`
-
-```bash
-WHATSAPP_PHONE_NUMBER_ID=123456789012345
-WHATSAPP_ACCESS_TOKEN=<ton_token_permanent>
-WHATSAPP_VERIFY_TOKEN=golden_market_verify_2026_xK9pL
-WHATSAPP_BUSINESS_ACCOUNT_ID=987654321098765
-```
-
-Puis redémarre la stack pour que n8n les ait en variables d'environnement si tu comptes les référencer via `{{$env.WHATSAPP_ACCESS_TOKEN}}` :
-```bash
-docker compose down && docker compose up -d
-```
-
-Alternative plus propre : crée plutôt un **credential "Header Auth"** dans n8n pour le token WhatsApp (Name: `Authorization`, Value: `Bearer <token>`), à utiliser dans les nodes HTTP Request — évite d'exposer le token dans les variables d'env visibles par tous les workflows.
+Template WhatsApp d'escalade humaine : `escalation_alert` (catégorie Utility, français), utilisé
+par `escalate_to_human` et `mark_payment_reported`. **Recréé et approuvé le 2026-09-15** — n'a
+existé sur aucun compte Meta avant cette date malgré les versions précédentes de ce guide (voir
+Anomalie n°6). Corps actuel : `Golden Market - Intervention requise. Client : {{1}}. Message :
+{{2}}. Conversation : {{3}}, merci de verifier des que possible.` — **Meta rejette tout template
+dont une variable se trouve en tout début ou en toute fin de corps** (erreur API
+`error_subcode: 2388299`) ; un simple point après `{{3}}` ne suffit pas, il faut un texte de
+clôture substantiel (quelques mots), confirmé empiriquement le 2026-09-15 après plusieurs essais.
+Template de confirmation de commande distinct :
+`order_confirmation_from_whatsapp` (sans "Bonjour X", pour les commandes passées via l'agent) vs
+`order_confirmation_from_website` (commandes storefront) — le choix se fait côté backend Medusa
+selon `order.metadata.source`.
 
 ---
 
-## 2. Template WhatsApp pour l'escalade humaine
+## 2. Vue d'ensemble du workflow principal
 
-Dans **Meta Business Suite → WhatsApp Manager → Message Templates → Create Template** :
-
-- **Nom** : `escalation_alert`
-- **Catégorie** : `Utility`
-- **Langue** : Français
-- **Corps** :
-```
-🔔 Golden Market - Intervention requise
-Client : {{1}}
-Message : {{2}}
-Voir la conversation : {{3}}
-```
-- Soumets pour approbation (généralement rapide pour un template utilitaire simple).
-
-Une fois approuvé, tu l'utiliseras dans le tool `escalate_to_human` (voir section 3.5).
-
----
-
-## 3. Construction du workflow n8n
-
-### Vue d'ensemble du workflow
+Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjxxj`).
 
 ```
-[Webhook: réception]
+[Webhook GET whatsapp]  → [If verify_token] → [Respond 200 / 403]     (vérification Meta, ponctuel)
+
+[Webhook POST whatsapp, rawBody: true]
         │
         ▼
-[Vérifier signature Meta] ──(invalide)──► [Répondre 403]
-        │ (valide)
+[Is Real Message] ──(accusé lecture/livraison, pas de messages[])──► [Respond 200 vide]
+        │ (vrai message)
         ▼
-[Extraire message + numéro]
+[Vérifier signature HMAC sur le corps BRUT]
         │
         ▼
-[Postgres: trouver ou créer conversation]
+[Edit Fields : from / message_text / whatsapp_msg_id]
         │
         ▼
-[Postgres: récupérer historique messages]
+[Postgres : trouver ou créer conversation (SQL_query_1)]
         │
         ▼
-[AI Agent (Claude) avec tools] ◄────────┐
-        │                                │
-        ├─ check_stock ──────────────────┤
-        ├─ get_price ─────────────────────┤
-        ├─ create_order ──────────────────┤
-        ├─ get_payment_instructions ──────┤
-        ├─ mark_payment_reported ─────────┤
-        └─ escalate_to_human ─────────────┘
+[Postgres : récupérer historique messages, ORDER BY seq (SQL_query_2)]
         │
         ▼
-[HTTP Request: envoyer réponse via Meta API]
+[AI Agent (Groq principal / Claude fallback — voir Anomalie n°1)] ◄────────┐
+        │                                                                   │
+        ├─ find_products ────────────────────────────────────────────────┤
+        ├─ place_order ───────────────────────────────────────────────────┤
+        ├─ get_payment_instructions ─────────────────────────────────────┤
+        ├─ mark_payment_reported ────────────────────────────────────────┤
+        └─ escalate_to_human ────────────────────────────────────────────┘
         │
         ▼
-[Postgres: sauvegarder le tour de conversation]
+[HTTP Request : envoyer réponse via Meta API, preview_url: true]
+        │
+        ▼
+[Postgres : sauvegarder le tour de conversation]
 ```
 
-### 3.1 Node Webhook — réception des messages
+Workflow séparé (webhook sortant) : **`Golden Market Order Confirmation from website —
+WhatsApp client`** (id `pse4PNU4MF5OMGHB`) — reçoit un POST du backend Medusa à chaque commande
+placée (n'importe quelle source : storefront ou WhatsApp), vérifie un secret partagé
+(`N8N_ORDER_CONFIRMATION_WEBHOOK_SECRET`), envoie le template WhatsApp de confirmation
+correspondant. Généralisé pour accepter `template_name` + `params[]` plutôt que d'être câblé en
+dur sur un seul template.
 
-⚠️ Il faut **deux nodes Webhook séparés et indépendants** sur le canvas (chacun est un trigger à part entière, pas besoin de les relier entre eux) :
+### 2.1 Node Webhook — réception des messages
 
-**Webhook #1 — vérification Meta (une seule fois, au moment de la config du webhook côté Meta)**
-1. **Add node → Webhook**
-2. **HTTP Method** : `GET`
-3. **Path** : `whatsapp`
-4. **Respond** : `Using 'Respond to Webhook' Node`
-5. Connecte-le à un node **If**, condition :
-   - `{{ $json.query["hub.verify_token"] }}` **is equal to** `<ta valeur WHATSAPP_VERIFY_TOKEN>`
-6. Branche **true** → node **Respond to Webhook** :
-   - Respond With : `Text`
-   - Response Body : `{{ $json.query["hub.challenge"] }}`
-   - Response Code : `200`
-7. Branche **false** → autre node **Respond to Webhook** :
-   - Response Code : `403`
-   - Response Body : `Verification failed`
+Deux nodes **Webhook** indépendants sur le même path `whatsapp`, non reliés entre eux :
+- **GET** — vérification Meta (`hub.verify_token`/`hub.challenge`), ponctuel.
+- **POST** (`rawBody: true`) — messages réels, en continu. `rawBody: true` expose le corps HTTP
+  brut en base64 sur `binary.data.data`, **indispensable** pour que la vérification HMAC (§ 2.2)
+  corresponde exactement à ce que Meta a signé — `JSON.stringify(body)` sur le JSON déjà parsé ne
+  reproduit pas les octets d'origine dès qu'un accent ou un emoji est présent (bug réel corrigé le
+  2026-09-07, voir Historique des correctifs).
 
-**Webhook #2 — réception des vrais messages (en continu, une fois la vérification passée)**
-1. **Add node → Webhook** (nouveau node séparé, pas connecté au premier)
-2. **HTTP Method** : `POST`
-3. **Path** : `whatsapp` (le même chemin — n8n distingue GET et POST automatiquement)
-4. C'est le point de départ de toute la suite du workflow (sections 3.2 et suivantes).
+Meta envoie aussi des accusés de lecture/livraison en POST sans `messages[]` — le node
+**`Is Real Message`** (juste après la vérification de signature) ne laisse passer que les
+payloads avec un vrai `messages[]`, pour éviter un crash sur `to: null` en aval.
 
-⚠️ **Le workflow doit être activé** (toggle "Active" en haut à droite de l'éditeur) pour que l'URL de production réponde. Sans ça, la vérification Meta échoue avec une erreur du type *"Impossible de valider l'URL de rappel"*.
+### 2.2 Vérifier la signature (sécurité)
 
-Ton canvas ressemble à deux branches indépendantes :
-```
-[Webhook GET]  → [If] → [Respond 200 / 403]        (vérification Meta, ponctuel)
+Node **Code**, calcule le HMAC-SHA256 sur le corps brut (`Buffer.from(binary.data.data, 'base64')`,
+pas `JSON.stringify`) avec `WHATSAPP_APP_SECRET`, compare à l'en-tête `x-hub-signature-256`, lève
+une erreur si ça ne correspond pas.
 
-[Webhook POST] → [If: messages existe ?] → ...      (messages réels, en continu)
-```
-
-### 3.2 Vérifier la signature (sécurité)
-
-Sur les requêtes POST entrantes, Meta signe le payload avec `X-Hub-Signature-256` (HMAC-SHA256 avec ton App Secret). Ajoute un node **Code** juste après le Webhook :
-
-```javascript
-const crypto = require('crypto');
-
-const appSecret = $env.WHATSAPP_APP_SECRET; // récupéré depuis Meta → App Settings → Basic
-const signature = $input.item.json.headers['x-hub-signature-256'];
-const body = JSON.stringify($input.item.json.body);
-
-const expectedSignature = 'sha256=' + crypto
-  .createHmac('sha256', appSecret)
-  .update(body)
-  .digest('hex');
-
-if (signature !== expectedSignature) {
-  throw new Error('Signature invalide — requête rejetée');
-}
-
-return $input.item;
-```
-
-Ajoute `WHATSAPP_APP_SECRET` (trouvable dans **App Settings → Basic** sur Meta) à ton `.env`.
-
-**Config n8n requise** — ajoute ces variables au service `n8n` dans `docker-compose.yml` :
+**Config n8n requise** (`docker-compose.yml`, service `n8n`) :
 ```yaml
 NODE_FUNCTION_ALLOW_BUILTIN: crypto        # autorise l'import du module 'crypto'
 N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"      # autorise $env dans les nodes Code
 ```
 
-⚠️ **Compromis de sécurité assumé** : `N8N_BLOCK_ENV_ACCESS_IN_NODE: false` donne accès à *toutes* les variables d'environnement (y compris `POSTGRES_PASSWORD`, `ANTHROPIC_API_KEY`, etc.) depuis n'importe quel node Code, pas seulement `WHATSAPP_APP_SECRET`. L'alternative propre (n8n Custom Variables, `$vars`) n'est disponible que sur les plans Enterprise/Pro, pas en Community self-hosted. Décision prise pour ce projet : rester sur `$env`, en s'imposant la règle de ne jamais copier un node Code depuis un workflow tiers sans relecture complète.
+⚠️ **Compromis de sécurité assumé** : `N8N_BLOCK_ENV_ACCESS_IN_NODE: false` donne accès à *toutes*
+les variables d'environnement (y compris `POSTGRES_PASSWORD`, `MEDUSA_ADMIN_KEY_*`) depuis
+n'importe quel node Code, pas seulement `WHATSAPP_APP_SECRET`. Règle : ne jamais copier un node
+Code d'un workflow tiers sans relecture intégrale.
 
-### 3.3 Extraire les infos du message
+### 2.3 Extraire les infos du message
 
-Le payload que Meta envoie en POST est un JSON imbriqué :
-```json
-{
-  "body": {
-    "entry": [{
-      "changes": [{
-        "value": {
-          "messages": [{
-            "from": "22670000000",
-            "id": "wamid.HBg...",
-            "text": { "body": "Bonjour, avez-vous..." }
-          }]
-        }
-      }]
-    }]
-  }
-}
+Node **Edit Fields (Set)** — transforme le JSON imbriqué de Meta en champs simples :
+
+| Name | Value |
+|---|---|
+| `from` | `{{ $json.body.entry[0].changes[0].value.messages[0].from }}` |
+| `message_text` | voir ci-dessous |
+| `whatsapp_msg_id` | `{{ $json.body.entry[0].changes[0].value.messages[0].id }}` |
+
+`message_text` gère aujourd'hui tous les types de message WhatsApp (bug réel corrigé le
+2026-09-15, voir Historique) via une chaîne de fallback :
+```js
+messages[0].text?.body
+  ?? messages[0].interactive?.button_reply?.title
+  ?? messages[0].interactive?.list_reply?.title
+  ?? (messages[0].image ? "[Image reçue]" : undefined)
+  ?? (messages[0].audio ? "[Message vocal reçu]" : undefined)
+  ?? (messages[0].sticker ? "[Autocollant reçu]" : undefined)
+  ?? (messages[0].video ? "[Vidéo reçue]" : undefined)
+  ?? (messages[0].document ? "[Document reçu]" : undefined)
+  ?? (messages[0].location ? "[Position reçue]" : undefined)
+  ?? "[Message reçu, type non pris en charge]"
+```
+Avant ce correctif, un message non-texte laissait `message_text = undefined` → `NULL` en base →
+violation de contrainte `NOT NULL` sur `messages.content` → crash silencieux, le client ne
+recevait **aucune** réponse. **Depuis le 2026-09-15, le cas `image` est enrichi par la branche
+vision (§ 2.3bis)** avant d'atteindre ce fallback ; les autres types (audio, sticker, vidéo,
+document, position) gardent le texte de repli simple, l'IA n'a aucun moyen de comprendre leur
+contenu réel (voir Anomalie n°4 en tête du guide, toujours vraie pour les liens externes).
+
+**Depuis le 2026-09-15**, `message_text` préfixe aussi le contenu avec le contexte publicitaire
+Meta quand disponible (expression étendue, même node) :
+```js
+(referral present ? "[Contexte pub/catalogue Meta : " + headline + " - " + body + " (" + source_url + ")]\n" : "")
+  + (chaîne de repli ci-dessus, inchangée)
+```
+Absent de `referral` → comportement strictement identique à avant. Voir Anomalie n°2 (corrigée)
+en tête du guide.
+
+### 2.3bis Photo envoyée par le client (vision)
+
+Branche insérée **après** `Edit Fields`, **avant** `SQL_query_1` — node **If** `Is Image Message`
+(condition : `messages[0].image` présent, référencé via `$('Webhook1')`, pas `$json`, pour ne pas
+dépendre de si `Edit Fields` préserve ou non les champs bruts) :
+
+```
+Edit Fields → Is Image Message
+                 true  → Get Media URL → Download Media → Describe Image (Vision) → Override Message Text With Vision → SQL_query_1
+                 false → SQL_query_1   (connexion directe, pas de node intermédiaire)
 ```
 
-⚠️ Meta envoie aussi des webhooks POST pour d'autres événements (accusés de lecture/livraison), qui n'ont pas de `messages`. Ajoute d'abord un node **If** juste après le Webhook POST :
-- Condition : `{{ $json.body.entry[0].changes[0].value.messages }}` **is not empty**
-- Branche **false** → **Respond to Webhook** (code `200`, corps vide) — on ignore silencieusement
-- Branche **true** → continue vers le node suivant
+Les deux branches ciblent le même node suivant (`SQL_query_1`) — pattern natif n8n valide (une
+seule branche s'exécute réellement par item), pas besoin de node `Merge`.
 
-Puis, sur la branche **true**, ajoute un node **Edit Fields (Set)** pour transformer ce JSON imbriqué en champs simples et nommés, réutilisables partout ensuite via `{{ $json.from }}` etc. Clique sur **"Add Field"** trois fois et remplis :
+- **Get Media URL** (`GET https://graph.facebook.com/v20.0/{{ image.id }}`, Bearer
+  `WHATSAPP_ACCESS_TOKEN`) résout l'id média WhatsApp en URL de téléchargement temporaire.
+- **Download Media** (`GET {{ $json.url }}`, même Bearer, `options.response.response.responseFormat:
+  "file"`) télécharge les octets réels ; n8n les stocke en binaire (base64 déjà accessible via
+  `$binary.data.data`).
+- **Describe Image (Vision)** : `POST https://api.openai.com/v1/chat/completions`,
+  `authentication: "predefinedCredentialType"` + `nodeCredentialType: "openAiApi"` (réutilise la
+  credential **"OpenAI account"** déjà existante dans ce n8n — utilisée par ailleurs pour
+  `AI News Curator`, aucune nouvelle clé nécessaire), modèle `gpt-4o-mini`, image envoyée en
+  `data:{mime_type};base64,{données}`. Retourne une description courte orientée identification
+  produit.
+- **Override Message Text With Vision** (Code) : remplace `message_text` (celui calculé par
+  `Edit Fields`) par `"[Photo envoyée par le client — description automatique : {description}]"`.
+  L'IA reçoit ensuite cette description **comme si c'était le texte du client** — aucun changement
+  nécessaire côté prompt système ou tools, `find_products`/`browse_catalog` fonctionnent normalement
+  dessus.
 
-| Name | Type | Value |
-|---|---|---|
-| `from` | String | `{{ $json.body.entry[0].changes[0].value.messages[0].from }}` |
-| `message_text` | String | `{{ $json.body.entry[0].changes[0].value.messages[0].text.body }}` |
-| `whatsapp_msg_id` | String | `{{ $json.body.entry[0].changes[0].value.messages[0].id }}` |
+**Défensif à chaque étape** (`Get Media URL`, `Download Media`, `Describe Image` ont tous
+`onError: "continueErrorOutput"` **au niveau racine du node**, pas dans `parameters` — voir
+"Piège critique" en § 2.6) : toute erreur (media id invalide/expiré, API OpenAI en panne, timeout)
+route vers **Vision Error Fallback**, qui renvoie simplement `$('Edit Fields').item.json` intact
+→ le pipeline retombe sur le texte "[Image reçue]" existant, jamais de crash.
 
-**Astuce** : dans le panneau de données d'entrée à droite du node, tu peux cliquer-glisser directement un champ du JSON reçu (ex: `from`) vers le champ Value — n8n génère l'expression correcte pour toi, pas besoin de la taper à la main.
+⚠️ **Pas testable de bout en bout par webhook signé** : un id média WhatsApp est une référence
+serveur à un vrai fichier uploadé, impossible à simuler avec `curl`. Vérifié uniquement : (a) avec
+un id fictif → `Get Media URL` échoue en 400, la branche d'erreur route bien vers le texte de repli
+existant, aucun crash (test réel le 2026-09-15) ; (b) structure JSON validée (connexions, pas de
+node orphelin). **Jamais vérifié avec une vraie photo envoyée par un vrai client** — à faire au
+premier cas réel, ou en demandant au propriétaire d'envoyer une photo de test depuis son téléphone.
 
-Ton flow complet jusqu'ici :
-```
-[Webhook POST] → [If: messages existe ?]
-                     ├─ true  → [Edit Fields] → [Vérifier signature] → ...
-                     └─ false → [Respond 200 vide]
-```
+### 2.4 Postgres — conversation + historique
 
-### 3.4 Postgres — conversation + historique
-
-**Node Postgres #1** (Execute Query) — trouver ou créer la conversation :
+**SQL_query_1** (upsert conversation) :
 ```sql
 INSERT INTO conversations (phone_number, last_message_at)
 VALUES ($1, now())
@@ -277,22 +296,31 @@ ON CONFLICT (phone_number)
 DO UPDATE SET last_message_at = now()
 RETURNING id;
 ```
-Paramètre `$1` = numéro extrait à l'étape 3.3.
+⚠️ Le paramètre **doit** être une expression (`={{ $json.from }}`, avec le `=` initial) — un bug
+réel (2026-09-05) avait ce champ en texte brut `"from"`, fusionnant toutes les conversations de
+tous les numéros en une seule ligne. Vérifier ce `=` en premier si des conversations semblent se
+mélanger.
 
-**Node Postgres #2** — récupérer l'historique (les 20 derniers messages par ex.) :
+**SQL_query_2** (historique, trié par ordre d'insertion réel) :
 ```sql
 SELECT role, content
 FROM messages
 WHERE conversation_id = $1
-ORDER BY created_at ASC
+ORDER BY seq ASC
 LIMIT 20;
 ```
+`ORDER BY seq` (colonne `BIGSERIAL`), pas `created_at` : la ligne `user` et la ligne `assistant`
+d'un même tour sont insérées dans la **même transaction** (`now()` identique), donc `created_at`
+seul ne les départage pas de façon fiable (bug réel corrigé le 2026-09-05, avait fait ignorer un
+message client par l'agent).
 
-### 3.5 AI Agent node — le cœur de l'agent
+### 2.5 AI Agent node
 
-1. **Add node → AI Agent**
-2. **Chat Model** : sélectionne le credential Anthropic, modèle Claude (Sonnet recommandé pour ce cas d'usage — bon équilibre coût/qualité).
-3. **System Prompt** — exemple de structure :
+**Chat Model principal** : `Groq Chat Model` (`openai/gpt-oss-120b`) — voir **Anomalie n°1**,
+ce devrait être Claude Sonnet 5 en principal.
+**Fallback** : `Anthropic Chat Model` (`claude-sonnet-5`).
+
+**System prompt actuel** (`options.systemMessage` du node `AI Agent`) :
 
 ```
 Tu es l'assistant commercial de Golden Market, une boutique en ligne au Burkina Faso.
@@ -300,434 +328,299 @@ Ton rôle : accueillir les prospects sur WhatsApp, répondre à leurs questions 
 et les accompagner jusqu'à la commande.
 
 Règles strictes :
-- N'invente JAMAIS un prix, un stock, ou une promesse de livraison — utilise toujours les tools.
+- N'invente JAMAIS un prix, un stock, ou une promesse de livraison — utilise toujours find_products, qui interroge le vrai catalogue.
+- Si find_products ne retourne aucun résultat, ne conclus PAS immédiatement que le produit n'existe pas : réessaie une fois avec un terme de recherche simplifié (garde uniquement le nom principal de l'objet, essaie le singulier ET le pluriel, retire les adjectifs). Ne dis au client qu'aucun produit n'a été trouvé qu'après ce second essai infructueux.
 - N'accorde jamais de remise non prévue.
+- Le paiement à la réception (cash) n'est proposé QUE si le client livre à Ouagadougou. Pour toute autre ville, propose uniquement Orange Money ou Moov Money.
+- Paiement à la réception : c'est TOUJOURS le client qui remet l'argent en espèces au livreur, jamais l'inverse. Ne dis jamais que le livreur remet ou rend de l'argent au client. Formule toujours ainsi : « vous réglerez / vous remettrez X FCFA en espèces au livreur ».
+- WhatsApp n'affiche PAS les tableaux markdown (barres |, tirets ---) : ne les utilise JAMAIS.
+- Quand tu présentes des produits trouvés par find_products : pour chaque produit, une ligne avec le nom et le prix, suivie du lien produit fourni par le tool (partage-le tel quel, c'est une URL cliquable), avec une courte phrase descriptive si utile. Jamais de tableau, une entrée par produit.
+- L'id variante interne (variant_xxx) fourni par find_products sert UNIQUEMENT à appeler place_order plus tard — ne l'affiche JAMAIS au client, même à côté du lien produit.
+- Le niveau de stock (quantité exacte, nombre d'unités) est une information interne strictement confidentielle — ne communique JAMAIS de chiffre de stock au client, même s'il le demande explicitement. Tu peux seulement dire si un produit est disponible ou en rupture de stock.
+- Si le client répond par un message qui n'apporte AUCUNE information nouvelle à ce que tu viens de demander (ex : « Ok », « D'accord », « 👍 »), ne reformule PAS et ne redonne PAS la liste complète que tu viens d'envoyer — réponds juste très brievement (ex : « Bien ! Je reste en attente de ces informations. ») et attends sa réponse. Ne redemande la liste complète que si le client semble avoir oublié ce qui lui a été demandé ou le redemande explicitement.
+- Le téléphone du client (déjà connu, c'est son numéro WhatsApp) est l'identifiant réel de la commande — ne redemande jamais d'email, ce n'est jamais nécessaire.
+- Avant d'appeler place_order, confirme explicitement avec le client : les articles, le prix total, l'adresse de livraison complète, et le moyen de paiement choisi.
 - Si le client est mécontent, confus après 2 tentatives, ou demande explicitement un humain → utilise escalate_to_human.
-- Pour finaliser une commande : utilise create_order, puis get_payment_instructions.
-- Le paiement se fait par transfert Mobile Money manuel — explique clairement le numéro et le montant exact, et demande une preuve de transfert.
+- Pour finaliser une commande : utilise place_order, puis get_payment_instructions.
+- Si le client signale avoir payé (référence de transaction ou capture d'écran), utilise mark_payment_reported.
 - Ton : chaleureux, professionnel, réponses courtes adaptées à WhatsApp (pas de pavés).
 - Langue : français, sauf si le client écrit dans une autre langue.
 ```
 
-4. **Tools** — chaque tool est un sous-workflow n8n séparé, avec un trigger **"When Executed by Another Workflow"**, appelé depuis le AI Agent via **"Call n8n Workflow Tool"**.
+Chaque règle correspond à un incident réel corrigé en production (voir Historique des
+correctifs) — ne pas en retirer une sans comprendre quel bug elle empêche de reproduire.
 
-**Configuration du node "Call n8n Workflow Tool"** (côté workflow principal, sous-node ajouté via `+` sous **Tool** du node AI Agent) — champs à renseigner :
-- **Workflow** : sélectionne le sous-workflow correspondant (ex: `Tool - check_stock`).
-- **Description** : champ texte juste en dessous du champ Workflow. **C'est le texte que Claude lit pour décider quand appeler ce tool** — pas une note pour toi. Sois précis sur le *quand* l'utiliser, pas juste le *quoi* (voir exemples de description pour chaque tool ci-dessous).
-- **Input Fields** : une fois le Workflow sélectionné, n8n affiche automatiquement la liste des champs définis dans le trigger du sous-workflow (`product_name`, `items`, etc.), chacun avec un switch pour choisir le mode de remplissage.
+### 2.6 Tools — Call n8n Workflow Tool
 
-**Principe du mapping des Input Fields** :
-- Champs que seul le client peut préciser (ex: nom de produit, quantité, adresse) → mode **"Let the model define"**.
-- Champs déjà connus avec certitude par le workflow (ex: `phone_number`, `conversation_id`) → mode **valeur fixe/expression**, référencée depuis les nodes du workflow principal (ex: `{{ $('Edit Fields').item.json.from }}`).
+Chaque tool est un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
+par son propre node *Call n8n Workflow Tool* sous le AI Agent — jamais un seul node listant
+plusieurs workflows (Claude ne pourrait pas les distinguer). Le champ **Description** de ce node
+est lu par le modèle pour décider quand appeler le tool — c'est du prompt, pas un commentaire.
 
-#### Tool `check_stock`
+⚠️ **Piège critique découvert le 2026-09-15, à connaître avant de toucher n'importe quel tool** :
+`onError: "continueErrorOutput"` doit être une propriété **au niveau racine du node** (sœur de
+`id`/`name`/`type`/`position`), **pas** à l'intérieur de `parameters` — placé au mauvais endroit,
+n8n l'ignore silencieusement (aucune erreur de validation à l'import) et le node se comporte comme
+sans gestion d'erreur du tout. Pour un tool appelé par l'AI Agent (sous-workflow), une exception non
+interceptée y est en général absorbée par le wrapper d'exécution de tool de n8n (le modèle reçoit
+juste un message d'erreur) — mais **un node du workflow principal lui-même** (ex. la branche vision,
+§ 2.3bis) qui lève une exception non interceptée **fait planter tout le node `AI Agent`, et le
+client ne reçoit alors aucune réponse**. Vérifié dans les deux sens en conditions réelles le
+2026-09-15 (`onError` mal placé → crash confirmé sur un node du workflow principal ; correctif →
+dégradation propre confirmée). Référence de bon exemple déjà présente dans le workflow
+`Golden Market Order Confirmation from website` (node `Send WhatsApp Template`).
 
-**Trigger — Input Fields** : `product_name` (String)
+#### Tool `find_products` (id `s6Ef6xBRxBeF6dgW`)
 
-**Node Postgres** :
-```sql
-SELECT name, stock_qty, is_active
-FROM products
-WHERE name ILIKE '%' || $1 || '%'
-  AND is_active = true
-LIMIT 5;
+**Input** : `product_name` (String, "Let the model define"), `conversation_id` (fixe,
+`{{ $('SQL_query_1').item.json.id }}`), `phone_number` (fixe, `{{ $('Edit Fields').item.json.from
+}}`) — ces deux derniers ajoutés le 2026-09-15 pour le garde-fou d'escalade ci-dessous.
+
+**Description côté workflow principal** :
 ```
-Query Parameters : `{{ [$json.product_name] }}`
-
-**Node Code (retour)** :
-```javascript
-const results = $input.all().map(item => item.json);
-
-if (results.length === 0) {
-  return { json: { result: "Aucun produit trouvé avec ce nom." } };
-}
-
-const summary = results.map(p =>
-  `${p.name} : ${p.stock_qty > 0 ? `${p.stock_qty} en stock` : 'rupture de stock'}`
-).join('\n');
-
-return { json: { result: summary } };
+Recherche des produits réels Golden Market (prix, stock) via le Store API Medusa.
 ```
 
-**Tool Description** (côté workflow principal) :
+**Node `Search Medusa Products`** (HTTP GET) :
 ```
-Vérifie la disponibilité en stock d'un produit à partir de son nom. Utilise ce tool avant d'affirmer qu'un produit est disponible ou non.
+{MEDUSA_BACKEND_URL[_PRODUCTION]}/store/products-fuzzy-search?q={{ product_name }}&limit=5
+Header: x-publishable-api-key: {MEDUSA_PUBLISHABLE_KEY[_PRODUCTION]}
 ```
+Bascule staging/production automatique selon `$env.MEDUSA_ENV`. Cette route est un endpoint
+Medusa dédié (`apps/backend/src/api/store/products-fuzzy-search/route.ts`,
+`apps/backend/src/lib/product-fuzzy-search.ts`) — `word_similarity` (`pg_trgm`), seuil `> 0.4`
+choisi empiriquement sur le catalogue réel (vraies fautes/variantes scorent 0.6-0.95, produits
+sans rapport restent sous 0.35). Tolère fautes de frappe, accents manquants, singulier/pluriel —
+**pas** les synonymes ("balai" ne matchera jamais "serpillière", recherche sémantique hors scope,
+voir Anomalie n°3). Différent de `/store/products?q=` (matching littéral de Medusa, sans marge
+d'erreur — ne pas utiliser pour ce tool).
 
-⚠️ **Limite connue** : si `product_name` est une chaîne vide, `ILIKE '%%'` matche tous les produits. Non corrigé pour l'instant (le System Prompt guide l'agent à toujours fournir une vraie valeur) — à corriger plus tard avec un node If si des faux positifs apparaissent en usage réel.
+**Node `Format Result`** — pour chaque produit : titre, prix XOF, disponibilité (`"en stock"` /
+`"rupture de stock"` uniquement — **jamais** la quantité exacte, confidentialité assumée après un
+incident réel, voir Historique), lien produit storefront
+(`{storefrontUrl}/bf/products/{encodeURIComponent(handle)}` — `encodeURIComponent` indispensable,
+les handles peuvent contenir des caractères accentués), et l'id de variante interne (pour
+`place_order` uniquement, jamais à afficher au client).
 
-#### Tool `get_price`
-
-Même structure que `check_stock`.
-
-**Node Postgres** :
-```sql
-SELECT name, price, currency
-FROM products
-WHERE name ILIKE '%' || $1 || '%'
-  AND is_active = true
-LIMIT 5;
+**Garde-fou d'escalade déterministe, ajouté le 2026-09-15** — chaîne insérée entre `Search Medusa
+Products` et `Format Result` :
 ```
-Query Parameters : `{{ [$json.product_name] }}`
-
-**Node Code (retour)** :
-```javascript
-const results = $input.all().map(item => item.json);
-
-if (results.length === 0) {
-  return { json: { result: "Aucun produit trouvé avec ce nom." } };
-}
-
-const summary = results.map(p =>
-  `${p.name} : ${p.price} ${p.currency}`
-).join('\n');
-
-return { json: { result: summary } };
+Search Medusa Products (échec → Search Error Fallback : {products: []}, jamais de crash)
+  → Track Search Outcome (Postgres UPDATE conversations SET consecutive_search_misses = CASE
+      WHEN était-un-échec THEN +1 ELSE 0 END ... RETURNING consecutive_search_misses, was_miss,
+      products  ← products fait le tour via un 3e paramètre $3::jsonb pour rester disponible
+      en aval sans référence croisée fragile vers un node antérieur)
+  → Check Escalation Threshold (If : was_miss = true ET consecutive_search_misses >= 4)
+       true  → Notify Human (template escalation_alert, même format que escalate_to_human)
+                 succès → Mark Escalated (conversations.status = 'escalated') → Format Escalated Result
+                 échec  → Format Result (repli normal — ne JAMAIS dire au client "un humain va
+                          vous aider" si la notification n'est pas confirmée envoyée)
+       false → Format Result (inchangé)
 ```
+Seuil `4` choisi empiriquement : le modèle (surtout Groq, moins fiable en tool-calling, voir
+Anomalie n°1) peut légitimement appeler `find_products` 2-3 fois pour UNE seule vraie intention
+client (retry avec terme simplifié + éventuelles fautes de reformulation, incident du 2026-09-07).
+Un seuil trop bas déclencherait des escalades intempestives sur des recherches qui auraient fini
+par aboutir. À ajuster avec des données réelles une fois en usage.
 
-**Tool Description** :
+Chaque node de cette chaîne a `onError: "continueErrorOutput"` (au niveau racine, voir Piège
+critique ci-dessus) — testé en conditions réelles (4 échecs consécutifs simulés, template
+`escalation_alert` alors encore en attente d'approbation) : `Notify Human` a échoué comme prévu,
+`Check Escalation Threshold` est retombé sur `Format Result`, le client a reçu une réponse normale
+à chaque tour, jamais de crash.
+
+#### Tool `browse_catalog` (id variable — recréé le 2026-09-15, l'id dépend de l'import)
+
+**Input** : `hint` (String, optionnel, "Let the model define" — n8n exige au moins un champ
+déclaré sur le trigger *When Executed by Another Workflow*, `[]` est rejeté avec l'erreur "At
+least 1 field is required" ; ce champ n'est pas exploité par la logique elle-même, il existe pour
+satisfaire cette contrainte tout en laissant le modèle indiquer un indice s'il en a un).
+
+**Description côté workflow principal** :
 ```
-Retourne le prix d'un produit à partir de son nom. Utilise ce tool avant d'annoncer un prix à un client.
-```
-
-#### Tool `create_order`
-
-**Trigger — Input Fields** :
-| Field Name | Type | Mode (côté workflow principal) |
-|---|---|---|
-| `items` | String — JSON, ex: `[{"product_name":"...","quantity":2}]` | Let the model define |
-| `phone_number` | String | Fixe : `{{ $('Edit Fields').item.json.from }}` |
-| `conversation_id` | String (UUID) | Fixe : `{{ $('Postgres #1').item.json.id }}` |
-| `delivery_address` | String | Let the model define |
-
-⚠️ **Point technique important** : `$('When Executed by Another Workflow').item.json...` peut casser après un node Postgres avec `WITH`/`JOIN` (problème de "pairing" observé en pratique) — les champs reviennent `null`. **Solution retenue** : faire transiter `phone_number`, `conversation_id`, `delivery_address` directement à travers la requête SQL elle-même (en paramètres constants `$2`, `$3`, `$4`), plutôt que d'aller les rechercher dans un node externe au node suivant.
-
-**Node Postgres (calcul des sous-totaux + passage des infos client)** :
-```sql
-WITH item_data AS (
-  SELECT
-    (elem->>'product_name') AS product_name,
-    (elem->>'quantity')::int AS quantity
-  FROM jsonb_array_elements($1::jsonb) AS elem
-)
-SELECT
-  p.id,
-  p.name,
-  p.price,
-  id.quantity,
-  (p.price * id.quantity) AS subtotal,
-  $2::text AS phone_number,
-  $3::uuid AS conversation_id,
-  $4::text AS delivery_address
-FROM item_data id
-JOIN products p ON p.name ILIKE id.product_name AND p.is_active = true;
-```
-Query Parameters :
-```
-{{ [ typeof $json.items === 'string' ? $json.items : JSON.stringify($json.items), $json.phone_number, $json.conversation_id, $json.delivery_address ] }}
+Liste tout le catalogue publié (titre, prix, disponibilité). N'utilise ce tool QUE si
+find_products a échoué deux fois de suite (recherche initiale + réessai avec terme simplifié)
+pour la même demande du client : parcours alors la liste complète et identifie toi-même, avec ton
+propre jugement, le produit que le client a probablement voulu dire (faute non couverte par la
+recherche floue, synonyme, description approximative, déformation phonétique). Confirme avec le
+client avant d'annoncer un produit comme celui qu'il cherche.
 ```
 
-**Node Code (agrégation)** :
-```javascript
-const rows = $input.all().map(item => item.json);
+**Node `Browse Medusa Catalog`** (HTTP GET, défensif — `onError: "continueErrorOutput"` au niveau
+racine → `Browse Error Fallback` en cas d'échec) :
+```
+{MEDUSA_BACKEND_URL[_PRODUCTION]}/store/products-catalog?limit=60
+Header: x-publishable-api-key: {MEDUSA_PUBLISHABLE_KEY[_PRODUCTION]}
+```
+Route Medusa dédiée (`apps/backend/src/api/store/products-catalog/route.ts`, réutilise
+`listAllProducts`/`listAllProductIds` de `product-fuzzy-search.ts`, TDD, 132/132 tests backend
+verts) : liste tout le catalogue publié, sans filtre de similarité, avec la même logique de
+disponibilité/confidentialité de stock que `find_products`. **Choix délibéré plutôt qu'une vraie
+recherche sémantique par embeddings** : le catalogue est petit (~40 produits), tient largement dans
+un prompt, et l'appel IA a de toute façon déjà lieu à chaque tour — pas de nouveau fournisseur, pas
+de nouvelle credential, pas d'infra vectorielle à maintenir. Limite : ne scalera pas si le
+catalogue grossit significativement (au-delà de quelques centaines de produits, revoir cette
+approche).
 
-if (rows.length === 0) {
-  return { json: { result: "Aucun des produits demandés n'a été trouvé. Vérifie les noms." } };
-}
+**Node `Format Result`** — même format que `find_products` (titre, prix, disponibilité binaire,
+lien, id variante), mais pour tout le catalogue.
 
-const items = rows.map(r => ({
-  product_id: r.id,
-  name: r.name,
-  qty: r.quantity,
-  unit_price: r.price
-}));
+#### Tool `place_order` (id `EHll8zkvjwPJRJVz`)
 
-const total = rows.reduce((sum, r) => sum + Number(r.subtotal), 0);
+**Input** : `items` (JSON `[{variant_id, quantity}]`), `phone_number`, `first_name`, `address_1`,
+`city`, `provider_id`.
 
-return {
-  json: {
-    items_json: JSON.stringify(items),
-    total_amount: total,
-    phone_number: rows[0].phone_number,
-    conversation_id: rows[0].conversation_id,
-    delivery_address: rows[0].delivery_address
-  }
-};
+**Description** :
+```
+Crée une vraie commande Medusa (panier → adresse → livraison → paiement → complétion) à partir
+des articles, coordonnées et moyen de paiement confirmés par le client.
 ```
 
-**Node Postgres (insertion)** :
-```sql
-INSERT INTO orders (conversation_id, phone_number, items, total_amount, delivery_address, status)
-VALUES ($1, $2, $3::jsonb, $4, $5, 'pending_payment')
-RETURNING id, total_amount;
+Enchaîne les vrais appels Store API Medusa : `POST /store/carts` (région BF) → `POST
+/store/carts/{id}/line-items` (une fois par article, via `Split In Batches`) → si
+`provider_id = pp_cash-on-delivery_cash-on-delivery` **et** `city ≠ Ouagadougou`, **rejet
+immédiat** (`Check COD Allowed`, node `If`) avec un message demandant Orange/Moov Money — sinon
+`POST .../shipping-methods` → `POST /store/payment-collections` → `POST
+.../payment-sessions` (`provider_id` fourni par le modèle) → `POST /store/carts/{id}/complete` →
+`POST /admin/orders/{id}` (auth Basic avec `MEDUSA_ADMIN_KEY_*`) pour taguer
+`metadata.source = "whatsapp"` (utilisé par le backend pour choisir le bon template de
+confirmation, voir § 1).
+
+`provider_id` valides à ce jour : `pp_cash-on-delivery_cash-on-delivery`,
+`pp_orange-money-manual_*`, `pp_moov-money-manual_*` (préfixes utilisés par
+`get_payment_instructions` pour choisir le message, voir plus bas — vérifier les valeurs exactes
+dans l'admin Medusa, Réglages → Régions → Burkina Faso → Fournisseurs de paiement si elles
+évoluent).
+
+#### Tool `get_payment_instructions` (id `DKlNw9FbVGWdhToy`)
+
+**Input** : `order_id` (repris du résultat de `place_order`).
+
+`GET /store/orders/{order_id}?fields=display_id,total,currency_code,*payment_collections.payments`
+puis message adapté au `provider_id` réel de la commande (COD Ouagadougou / Orange Money / Moov
+Money / repli générique).
+
+#### Tool `mark_payment_reported` (id `kBEyWGZdSLcI9EOI`)
+
+**Input** : `order_id`, `payment_reference` (optionnel, preuve donnée par le client).
+
+`POST /admin/orders/{order_id}` (Basic Auth admin) pour taguer
+`metadata.whatsapp_payment_reference`, puis notification automatique au propriétaire via le
+template `escalation_alert` (Option B retenue : la notification humaine est systématique ici,
+sans dépendre d'un enchaînement de tools décidé par l'agent). **Node `HTTP Request` (notification)
+rendu défensif le 2026-09-15** (`onError: "continueErrorOutput"` au niveau racine, sans suite
+connectée — voir Piège critique en tête de § 2.6) : avant ça, si la notification échouait pour
+n'importe quelle raison (voir Anomalie n°6, le template lui-même n'a existé qu'à partir de cette
+date), tout le tool plantait et **le client ne recevait aucune confirmation d'enregistrement de son
+paiement**. La mise à jour de la commande (`Update Order Metadata`), elle, reste bloquante à
+dessein : mieux vaut un échec visible que de dire "c'est noté" à tort.
+
+**Description** :
 ```
-Query Parameters :
-```
-{{ [$json.conversation_id, $json.phone_number, $json.items_json, $json.total_amount, $json.delivery_address] }}
-```
-
-**Node Code (retour formaté)** :
-```javascript
-const order = $json;
-return {
-  json: {
-    result: `Commande créée (ID: ${order.id}). Montant total : ${order.total_amount} XOF. Utilise get_payment_instructions pour indiquer au client comment payer.`
-  }
-};
-```
-
-**Tool Description** :
-```
-Crée une commande à partir d'une liste d'articles (nom du produit + quantité). Utilise ce tool uniquement quand le client a confirmé exactement ce qu'il veut commander.
-```
-
-#### Tool `get_payment_instructions`
-
-**Trigger — Input Fields** :
-| Field Name | Type | Mode (côté workflow principal) |
-|---|---|---|
-| `order_id` | String (UUID) | Let the model define — Claude le reprend depuis le résultat du tool `create_order` |
-
-**Node Postgres** :
-```sql
-SELECT id, total_amount, currency, status
-FROM orders
-WHERE id = $1::uuid;
-```
-Query Parameters : `{{ [$json.order_id] }}`
-
-**Node Code (formatage)** :
-```javascript
-const order = $input.first().json;
-
-if (!order) {
-  return { json: { result: "Commande introuvable. Vérifie l'ID de commande." } };
-}
-
-const orangeMoneyNumber = $env.ORANGE_MONEY_NUMBER;
-const orangeMoneyName = $env.ORANGE_MONEY_NAME || "Golden Market";
-
-const message = `Pour finaliser ta commande, effectue un transfert Orange Money de ${order.total_amount} ${order.currency} au numéro ${orangeMoneyNumber} (${orangeMoneyName}).
-
-Une fois le transfert effectué, envoie-moi une capture d'écran ou le numéro de transaction pour confirmation.`;
-
-return { json: { result: message } };
+Marque une commande comme "paiement signalé par le client" et notifie automatiquement l'équipe
+pour vérification. Utilise ce tool quand le client confirme avoir effectué le transfert Mobile
+Money.
 ```
 
-**Config requise** — ajoute à `.env` et au bloc `environment` du service `n8n` dans `docker-compose.yml` :
-```bash
-ORANGE_MONEY_NUMBER=+226XXXXXXXX
-ORANGE_MONEY_NAME=Golden Market
+#### Tool `escalate_to_human` (id `ho253xg11t9NVxX7`)
+
+**Input** : `phone_number` (fixe, `{{ $('Edit Fields').item.json.from }}`), `conversation_id`
+(fixe), `reason` (Let the model define).
+
+Notification WhatsApp immédiate au propriétaire (template `escalation_alert`, branché
+directement après le trigger — préférer `{{ $json.champ }}` à `{{ $('Node').first().json.champ
+}}` quand c'est le cas, plus robuste). **Node `HTTP Request` rendu défensif le 2026-09-15**
+(même piège et même correctif que `mark_payment_reported` ci-dessus, branche d'erreur reroutée
+vers le même `Code in JavaScript` de fin — le client reçoit le message "un humain va prendre le
+relais" **que la notification interne ait réussi ou non**, décision assumée : mieux vaut rassurer
+le client à tort occasionnellement (rare, l'échec observé était un défaut de configuration
+maintenant corrigé) que de le laisser sans réponse à chaque fois).
+
+**Description** :
 ```
-
-**Tool Description** :
+Alerte un humain immédiatement. Utilise ce tool si le client est mécontent, confus après
+plusieurs tentatives, demande explicitement de parler à un humain, ou pour toute situation que
+tu ne peux pas gérer avec les autres tools.
 ```
-Retourne les instructions de paiement Mobile Money pour une commande précise. Utilise ce tool juste après avoir créé une commande avec create_order.
-```
+Cette règle reste au jugement du LLM à chaque tour (comme avant) — le garde-fou déterministe ajouté
+le 2026-09-15 (voir `find_products` ci-dessus) ne couvre que le cas précis des échecs de recherche
+produit répétés, pas toutes les situations où un humain serait utile.
 
-#### Tool `mark_payment_reported`
-
-**Trigger — Input Fields** :
-| Field Name | Type | Mode (côté workflow principal) |
-|---|---|---|
-| `order_id` | String (UUID) | Let the model define |
-| `payment_reference` | String — optionnel (preuve donnée par le client) | Let the model define |
-
-**Node Postgres (mise à jour du statut)**, nommé `Format Result`-compatible — donne un nom explicite au node Code suivant pour fiabiliser les références :
-```sql
-UPDATE orders
-SET status = 'payment_reported',
-    payment_reference = $2
-WHERE id = $1::uuid
-RETURNING id, total_amount, phone_number, status;
-```
-Query Parameters : `{{ [$json.order_id, $json.payment_reference || null] }}`
-
-**Node Code — renomme-le `Format Result`** (retour convivial pour l'agent) :
-```javascript
-const order = $input.first().json;
-
-if (!order) {
-  return { json: { result: "Commande introuvable — impossible de marquer le paiement." } };
-}
-
-return {
-  json: {
-    result: `C'est noté, merci ! Ta commande (${order.id}) est marquée comme en attente de vérification. Un membre de notre équipe va confirmer la réception du paiement sous peu.`,
-    order_id: order.id,
-    phone_number: order.phone_number,
-    total_amount: order.total_amount
-  }
-};
-```
-
-**Node HTTP Request — notification automatique (Option B retenue)** — la notification humaine est déclenchée systématiquement ici, sans dépendre d'un enchaînement de tools décidé par l'agent :
-```
-POST https://graph.facebook.com/v20.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages
-
-Headers:
-  Authorization: Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}
-  Content-Type: application/json
-
-Body (JSON, mode "Send Body" activé, "Specify Body" = "Using JSON") :
-{
-  "messaging_product": "whatsapp",
-  "to": "{{ $env.OWNER_WHATSAPP_NUMBER }}",
-  "type": "template",
-  "template": {
-    "name": "escalation_alert",
-    "language": { "code": "fr" },
-    "components": [
-      {
-        "type": "body",
-        "parameters": [
-          { "type": "text", "text": "{{ $('Format Result').first().json.phone_number }}" },
-          { "type": "text", "text": "Paiement signalé pour la commande {{ $('Format Result').first().json.order_id }} — montant {{ $('Format Result').first().json.total_amount }} XOF" },
-          { "type": "text", "text": "{{ $('Format Result').first().json.order_id }}" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-**Node Code final (retour agent)** — on repasse le message convivial, pas l'accusé technique de l'API Meta :
-```javascript
-return {
-  json: {
-    result: $('Format Result').first().json.result
-  }
-};
-```
-
-**Config requise** — ajoute à `.env` et au `docker-compose.yml` :
-```bash
-OWNER_WHATSAPP_NUMBER=+226XXXXXXXX
-```
-
-**Tool Description** :
-```
-Marque une commande comme "paiement signalé par le client" et notifie automatiquement l'équipe pour vérification. Utilise ce tool quand le client confirme avoir effectué le transfert Mobile Money.
-```
-
-#### Tool `escalate_to_human`
-
-**Trigger — Input Fields** :
-| Field Name | Type | Mode (côté workflow principal) |
-|---|---|---|
-| `phone_number` | String | Fixe : `{{ $('Edit Fields').item.json.from }}` |
-| `reason` | String | Let the model define |
-| `conversation_id` | String (UUID) | Fixe : `{{ $('Postgres #1').item.json.id }}` |
-
-**Node HTTP Request** — branché directement après le trigger :
-```
-POST https://graph.facebook.com/v20.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages
-
-Headers:
-  Authorization: Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}
-  Content-Type: application/json
-
-Body (JSON) :
-{
-  "messaging_product": "whatsapp",
-  "to": "{{ $env.OWNER_WHATSAPP_NUMBER }}",
-  "type": "template",
-  "template": {
-    "name": "escalation_alert",
-    "language": { "code": "fr" },
-    "components": [
-      {
-        "type": "body",
-        "parameters": [
-          { "type": "text", "text": "{{ $json.phone_number }}" },
-          { "type": "text", "text": "{{ $json.reason }}" },
-          { "type": "text", "text": "{{ $json.conversation_id }}" }
-        ]
-      }
-    ]
-  }
-}
-```
-⚠️ **Astuce fiabilité** : quand le node HTTP Request est branché **directement** après le trigger (pas de node intermédiaire), préfère `{{ $json.champ }}` à `{{ $('Nom du node').first().json.champ }}` — plus court, et évite tout risque lié à un nom de node mal orthographié ou contenant des guillemets typographiques copiés-collés.
-
-**Node Code final (retour agent)** :
-```javascript
-return {
-  json: {
-    result: "Un membre de notre équipe va prendre le relais très rapidement. Merci de patienter un instant."
-  }
-};
-```
-
-**Tool Description** :
-```
-Alerte un humain immédiatement. Utilise ce tool si le client est mécontent, confus après plusieurs tentatives, demande explicitement de parler à un humain, ou pour toute situation que tu ne peux pas gérer avec les autres tools.
-```
-
----
-
-**Astuce générale de test** : pour tester un sous-workflow indépendamment, ajoute temporairement un node **Edit Fields (Set)** juste après le trigger avec des valeurs de test (types corrects : String pour les UUID/numéros de téléphone, pas Number), exécute la chaîne, puis retire ce node avant la mise en prod.
-
-**⚠️ Rappel structurel important** : chaque tool doit être un node **"Call n8n Workflow Tool" séparé** sous le AI Agent (un par sous-workflow), jamais un seul node listant plusieurs workflows — sinon Claude ne peut pas les distinguer clairement.
-
-### 3.6 Envoyer la réponse via Meta API
-
-Node **HTTP Request**, branché après le node **AI Agent**.
-
-⚠️ **Piège rencontré et corrigé** : écrire le Body comme un texte JSON statique avec `{{ }}` insérés dedans casse dès que la réponse de l'IA contient un retour à la ligne, un emoji, ou une apostrophe courbe (ce que les modèles produisent naturellement). **Solution retenue** : construire le Body via `JSON.stringify()` sur un objet JS, qui échappe automatiquement tous les caractères spéciaux.
+### 2.7 Envoyer la réponse via Meta API
 
 ```
-POST https://graph.facebook.com/v20.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages
-
-Headers:
-  Authorization: Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}
-  Content-Type: application/json
-
-Body (JSON, "Send Body" activé, "Specify Body" = "Using JSON") :
-{{ JSON.stringify({
+POST https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages
+Body : {{ JSON.stringify({
   messaging_product: "whatsapp",
   to: $('Edit Fields').item.json.from,
   type: "text",
-  text: { body: $json.output }
+  text: { body: $json.output, preview_url: true }
 }) }}
 ```
+`preview_url: true` indispensable pour que Meta génère un aperçu de lien quand l'agent partage un
+lien produit (bug réel corrigé le 2026-09-07 — sans ce flag, l'aperçu manque même si le lien est
+valide). Toujours `JSON.stringify()`, jamais du JSON littéral avec `{{ }}` inséré — casse dès que
+la réponse contient un retour à la ligne, une apostrophe courbe ou un emoji.
 
-⚠️ Vérifie le nom exact du champ de sortie de l'AI Agent (généralement `output`) en cliquant sur le node après une exécution test.
+### 2.8 Sauvegarder le tour de conversation
 
-### 3.7 Sauvegarder le tour de conversation
-
-Node **Postgres**, branché après le HTTP Request :
-
-```sql
-INSERT INTO messages (conversation_id, role, content, whatsapp_msg_id)
-VALUES
-  ($1, 'user', $2, $3),
-  ($1, 'assistant', $4, NULL);
-```
-
-**Query Parameters** :
-```
-{{ [ $('Postgres #1').item.json.id, $('Edit Fields').item.json.message_text, $('Edit Fields').item.json.whatsapp_msg_id, $('AI Agent').item.json.output ] }}
-```
-*(adapte les noms de nodes entre parenthèses à ceux réellement utilisés — préfère `$json.champ` sans référence de node quand le node est branché directement en amont, plus robuste, voir le souci de "pairing" rencontré sur `create_order`)*
+Node Postgres, insère la ligne `user` et la ligne `assistant` dans la même transaction (`messages`,
+colonne `seq` pour l'ordre réel — voir § 2.4).
 
 ### Fallback multi-provider (résilience)
 
-Pour éviter qu'un souci ponctuel chez un provider IA (crédit épuisé, quota, panne) ne bloque tout le bot, le node **AI Agent** supporte un modèle de secours :
-1. Node AI Agent → **Options** → active **"Enable Fallback Model"**.
-2. Un second connecteur "Chat Model" apparaît — branche-y un second provider (ex: **Groq Chat Model**, avec son propre credential).
-3. **Modèle recommandé sur Groq pour ce cas d'usage** : `openai/gpt-oss-120b` (meilleur compromis raisonnement/tool-calling actuellement disponible chez Groq ; `openai/gpt-oss-20b` en alternative plus rapide/moins chère si la qualité du fallback importe moins que la latence).
-4. Si Claude échoue, n8n bascule automatiquement sur Groq sans que le client ne remarque d'interruption.
+Le node **AI Agent** a un second connecteur Chat Model pour la résilience (crédit épuisé, quota,
+panne d'un provider) — **intention d'origine : Claude Sonnet 5 en principal, Groq
+`openai/gpt-oss-120b` en secours ponctuel seulement** (moins fiable en suivi d'instructions/
+tool-calling, acceptable en fallback, pas comme modèle principal). **État réel en prod au
+2026-09-15 : inversé, voir Anomalie n°1.**
 
-⚠️ Les modèles Groq sont open-weight, avec un raisonnement/suivi d'instructions en retrait par rapport à Claude — acceptable en fallback ponctuel, pas recommandé comme modèle principal.
+---
+
+## 3. Historique des correctifs réels (pour comprendre le *pourquoi* de chaque règle)
+
+Détail complet dans `medusa-golden-market/HANDOFF.md` (journal de session, tenu à jour en
+continu — plus fiable que ce guide en cas de divergence). Résumé chronologique des incidents
+production ayant façonné le workflow actuel :
+
+- **2026-09-05** — conversations de tous les clients fusionnées (`=` manquant sur un paramètre
+  SQL) ; sens du paiement à la réception inversé par l'IA ; tableaux markdown + id technique
+  exposés au client (→ ajout du lien produit dans `find_products`) ; accusés de statut WhatsApp
+  traités comme de vrais messages ; historique de conversation parfois dans le désordre (→ colonne
+  `seq`).
+- **2026-09-07** — signature HMAC cassait sur accent/emoji (→ `rawBody: true`) ; aperçu de lien
+  produit absent (→ `preview_url: true` + `encodeURIComponent(handle)`) ; fuite du stock exact au
+  client (→ disponibilité binaire uniquement, interdiction explicite dans le prompt) ; recherche
+  produit non tolérante aux fautes (→ retry avec terme simplifié dans le prompt + nouvelle route
+  `/store/products-fuzzy-search`, branchée sur `find_products` une fois déployée).
+- **2026-09-13/14** — synchro catalogue Medusa → Meta Commerce Catalog mise en place et vérifiée
+  bout en bout (404 d'infra Apache corrigé, jeton WhatsApp régénéré avec le scope
+  `catalog_management`) ; Pixel Meta + Conversions API ajoutés par-dessus.
+- **2026-09-15** — crash sur message non-texte (`message_text` NULL) corrigé (→ chaîne de repli
+  par type de message, § 2.3) ; audit de fond identifiant l'inversion Groq/Claude (Anomalie n°1,
+  laissée en l'état, voir plus bas) et l'absence d'extraction du `referral` Meta (→ corrigé, § 2.3) ;
+  ménage n8n (suppression des 4 workflows `check_stock`/`get_price`/`create_order`/ancien
+  `place_order`, obsolètes depuis le passage au Store API Medusa) ; **suite du même audit, même
+  journée** : recherche sémantique de repli (`browse_catalog`, § 2.6) ; garde-fou d'escalade
+  déterministe (`find_products` + colonne `conversations.consecutive_search_misses`, § 2.6) ;
+  vision sur photo envoyée par le client (§ 2.3bis) ; tentative d'inversion Groq/Claude appliquée
+  puis annulée dans la foulée (pas de crédit Anthropic disponible) ; **découverte que le template
+  `escalation_alert` n'existait pas du tout sur le compte Meta** (créé et approuvé le jour même) et
+  que ça cassait silencieusement `escalate_to_human`/`mark_payment_reported` en prod depuis le
+  début — les deux rendus défensifs ; **piège général découvert en le corrigeant** : `onError` doit
+  être au niveau racine du node, pas dans `parameters`, sans quoi n8n l'ignore sans avertissement
+  (voir Piège critique en tête de § 2.6) — plusieurs des correctifs du jour ont dû être redéployés
+  une deuxième fois une fois ce piège compris.
 
 ---
 
 ## 4. Tester de bout en bout
 
-### Méthode recommandée pour les tests répétés : `curl` plutôt que de vrais messages WhatsApp
+### `curl` avec signature HMAC plutôt que de vrais messages WhatsApp
 
-⚠️ **Piège rencontré** : envoyer beaucoup de messages de test rapprochés depuis un vrai téléphone WhatsApp vers le même contact peut faire flaguer ce numéro personnel comme spam/automatisé par WhatsApp (restriction temporaire ~6h, compte toujours utilisable en réception). **Réserve les vrais messages WhatsApp aux tests finaux de bout en bout** ; utilise `curl` pour toutes les itérations de debug.
+⚠️ Envoyer beaucoup de messages de test rapprochés depuis un vrai téléphone vers le même contact
+peut faire flaguer ce numéro comme spam par WhatsApp (restriction temporaire ~6h). Réserver les
+vrais messages WhatsApp aux tests finaux de bout en bout.
 
 ```bash
 BODY='{"entry":[{"changes":[{"value":{"messages":[{"from":"TON_NUMERO","id":"wamid.TEST'$(date +%s)'","text":{"body":"Bonjour, avez-vous ce produit ?"}}]}}]}]}'
@@ -739,49 +632,43 @@ curl -X POST https://n8n.golden-market.co/webhook/whatsapp \
   -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
   -d "$BODY"
 ```
-*(URL de production `/webhook/whatsapp` une fois le workflow publié ; `/webhook-test/whatsapp` en mode "Listen for test event")*
+Path prod `/webhook/whatsapp` (workflow publié) ; `/webhook-test/whatsapp` en mode "Listen for
+test event".
+
+**Attention avec ce `curl` simplifié** : le corps signé ici n'est pas byte-identique à ce que
+produirait un vrai client WhatsApp si le message contient des accents/emoji (voir § 2.2, `rawBody:
+true`) — pour tester spécifiquement la vérification de signature avec des caractères spéciaux,
+reproduire le corps exact octet pour octet, pas juste le JSON logique.
 
 ### Étapes
 
-1. **Publie le workflow** — dans cette version de n8n, il n'y a pas de toggle "Active" classique : utilise le bouton **"Publish"** en haut à droite de l'éditeur. Un triangle rouge sur un node bloque la publication — clique dessus pour voir l'erreur exacte à corriger avant de pouvoir publier.
-2. Envoie un message (via `curl` ou un vrai message WhatsApp).
-3. Vérifie dans l'onglet **"Executions"** (à côté de "Editor") que le workflow s'est déclenché sans erreur.
-4. Vérifie en base que la conversation/les messages sont bien enregistrés :
-   ```bash
-   docker compose exec postgres psql -U <user> -d golden_market -c "SELECT * FROM messages ORDER BY created_at DESC LIMIT 5;"
-   ```
-5. Teste un scénario de commande complet, puis un scénario d'escalade.
+1. Publier le workflow (**Publish**, pas de toggle "Active" classique dans cette version de n8n) ;
+   un triangle rouge sur un node bloque la publication.
+2. Envoyer un message (`curl` ou vrai WhatsApp).
+3. Vérifier l'onglet **Executions** (déclenchement sans erreur).
+4. Vérifier en base : `docker compose exec postgres psql -U <user> -d golden_market -c "SELECT *
+   FROM messages ORDER BY seq DESC LIMIT 5;"`.
+5. Tester un scénario de commande complet (jusqu'à `place_order` + `get_payment_instructions`), un
+   scénario `mark_payment_reported`, et un scénario d'escalade.
 
 ### En mode développement Meta (avant App Review)
 
-Tant que l'app Meta n'a pas été publiée/passée en review, Cloud API n'autorise l'envoi qu'aux numéros explicitement ajoutés comme testeurs : **App Dashboard → WhatsApp → API Setup → champ "To" → "Manage phone number list"**, ajoute le(s) numéro(s) destinataire(s) (jusqu'à 5), vérifie-les via le code reçu. Pas besoin de publier l'app pour tester avec ces numéros.
-
-### Pièges rencontrés à surveiller si l'envoi de messages échoue
-
-- **`Object with ID ... does not exist, cannot be loaded due to missing permissions`** → le WABA (`WHATSAPP_BUSINESS_ACCOUNT_ID`) n'est probablement pas assigné à l'utilisateur système utilisé pour générer le token, en plus de l'app elle-même. Dans **Paramètres de l'entreprise → Utilisateurs système → Ajouter des actifs**, assigne explicitement le **compte WhatsApp Business (WABA)**, pas seulement l'app — puis régénère le token après coup.
-- Test de vérification rapide (isole le problème hors n8n) :
-  ```bash
-  docker compose exec n8n sh -c 'curl -s "https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}?access_token=${WHATSAPP_ACCESS_TOKEN}"'
-  ```
-
-
+Cloud API n'autorise l'envoi qu'aux numéros testeurs explicitement ajoutés (jusqu'à 5) tant que
+l'app Meta n'a pas été passée en review — **App Dashboard → WhatsApp → API Setup → "Manage phone
+number list"**.
 
 ---
 
-## 5. Checklist sécurité avant mise en prod
+## 5. Checklist sécurité
 
-- [ ] Signature Meta vérifiée sur chaque requête entrante (section 3.2)
-- [ ] Token WhatsApp stocké en credential n8n, pas en clair dans un node
-- [ ] ⚠️ `N8N_BLOCK_ENV_ACCESS_IN_NODE: false` activé (compromis assumé, voir section 3.2) — ne jamais importer de workflow/node Code tiers sans relecture complète
-- [ ] `.env` toujours hors Git (`.gitignore` en place)
-- [ ] Basic Auth actif sur l'éditeur n8n (déjà fait)
-- [ ] Sauvegardes régulières du volume Postgres (`pg_dump` planifié)
-- [ ] Limite claire dans le system prompt + les tools sur ce que l'agent peut promettre (prix, stock, délais)
-- [ ] Template `escalation_alert` approuvé par Meta
-- [ ] Tout outil d'admin ajouté plus tard (accès direct à la base) : mot de passe fort + accès restreint (IP whitelist / VPN)
-
----
-
-## Prochaine étape immédiate
-
-Une fois ce guide en main : commence par la **section 1** (config Meta) puisque c'est un prérequis bloquant pour tout le reste — la vérification d'identité business peut prendre 1 à 3 jours, autant la lancer tout de suite pendant qu'on construit le workflow en parallèle.
+- [x] Signature Meta vérifiée sur le corps brut de chaque requête entrante (§ 2.2)
+- [x] `.env` toujours hors Git
+- [x] Basic Auth actif sur l'éditeur n8n
+- [ ] ⚠️ `N8N_BLOCK_ENV_ACCESS_IN_NODE: false` reste un compromis assumé — ne jamais importer de
+      node Code tiers sans relecture complète
+- [ ] Sauvegardes régulières du volume Postgres (`pg_dump` planifié) — à vérifier, pas documenté
+      comme fait
+- [x] Limite claire dans le system prompt sur ce que l'agent peut promettre (prix, stock, délais,
+      remises)
+- [x] Templates WhatsApp (`escalation_alert`, `order_confirmation_from_whatsapp`) approuvés par
+      Meta
