@@ -87,10 +87,13 @@
    deux tools n'avait de gestion d'erreur, **le client ne recevait alors AUCUNE réponse** (le node
    `AI Agent` plante entièrement si un de ses tools lève une exception non interceptée — vérifié en
    conditions réelles le 2026-09-15, voir § 2.6 "Piège critique"). Template recréé via l'API Meta
-   (`POST /{waba_id}/message_templates`, catégorie UTILITY, français) et approuvé ; `escalate_to_human`
-   et `mark_payment_reported` rendus défensifs (`onError` au bon endroit, voir Piège critique) pour
+   (`POST /{waba_id}/message_templates`, français) et **approuvé** (reclassé `MARKETING` par Meta,
+   demandé en `UTILITY` — sans incidence côté envoi) ; `escalate_to_human` et
+   `mark_payment_reported` rendus défensifs (`onError` au bon endroit, voir Piège critique) pour
    qu'une panne similaire ne puisse plus jamais couper la réponse au client, quelle qu'en soit la
-   cause future.
+   cause future. **Vérifié de bout en bout avec un vrai `wamid.` renvoyé par l'API Meta** (test
+   live signé, `escalate_to_human`) — la notification atteint réellement le propriétaire, pas
+   seulement "le client reçoit une réponse".
 
 ---
 
