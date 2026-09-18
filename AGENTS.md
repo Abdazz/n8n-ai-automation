@@ -75,10 +75,13 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
 - **Deux nodes Webhook indépendants** sur le même path `whatsapp` : un `GET` (vérification Meta,
   `hub.challenge`) et un `POST` (messages). Ils ne sont pas reliés. Meta envoie aussi des accusés de
   lecture/livraison sans `messages` — d'où le node `If` en tête de chaîne POST.
-- **5 tools actifs**, chacun un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
+- **7 tools actifs**, chacun un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
   par son propre node *Call n8n Workflow Tool* sous le AI Agent : `find_products`, `place_order`,
-  `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`. (`check_stock`, `get_price`,
-  `create_order` et l'ancien `place_order` supprimés en base le 2026-09-15, cf. « Pièges connus ».)
+  `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`, `browse_catalog` (ajouté
+  2026-09-15), `search_products_semantic` (ajouté 2026-09-18, voir guide § 2.6). Cascade de recherche
+  produit : `find_products` (pg_trgm) → `search_products_semantic` (embeddings pgvector) →
+  `browse_catalog` en tout dernier recours. (`check_stock`, `get_price`, `create_order` et l'ancien
+  `place_order` supprimés en base le 2026-09-15, cf. « Pièges connus ».)
 - Le champ **Description** d'un *Call n8n Workflow Tool* est le texte que le modèle lit pour décider
   d'appeler le tool — c'est du prompt, pas un commentaire.
 - **Body des HTTP Request vers Meta : toujours `{{ JSON.stringify({...}) }}`**, jamais du JSON littéral

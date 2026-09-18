@@ -498,15 +498,64 @@ Header: x-publishable-api-key: {MEDUSA_PUBLISHABLE_KEY[_PRODUCTION]}
 Route Medusa dédiée (`apps/backend/src/api/store/products-catalog/route.ts`, réutilise
 `listAllProducts`/`listAllProductIds` de `product-fuzzy-search.ts`, TDD, 132/132 tests backend
 verts) : liste tout le catalogue publié, sans filtre de similarité, avec la même logique de
-disponibilité/confidentialité de stock que `find_products`. **Choix délibéré plutôt qu'une vraie
-recherche sémantique par embeddings** : le catalogue est petit (~40 produits), tient largement dans
-un prompt, et l'appel IA a de toute façon déjà lieu à chaque tour — pas de nouveau fournisseur, pas
-de nouvelle credential, pas d'infra vectorielle à maintenir. Limite : ne scalera pas si le
-catalogue grossit significativement (au-delà de quelques centaines de produits, revoir cette
-approche).
+disponibilité/confidentialité de stock que `find_products`. **Mis à jour le 2026-09-18** : ce
+tool reste le filet de sécurité de tout dernier recours, mais n'est plus la seule alternative à
+`find_products` en cas d'échec — voir `search_products_semantic` ci-dessous, ajouté précisément
+pour couvrir le cas où ce choix (dumper tout le catalogue plutôt qu'une vraie recherche
+vectorielle) ne scalerait plus si le catalogue grossissait significativement.
 
 **Node `Format Result`** — même format que `find_products` (titre, prix, disponibilité binaire,
 lien, id variante), mais pour tout le catalogue.
+
+#### Tool `search_products_semantic` (id `2pOjBE9G1Un877H8`)
+
+Ajouté le 2026-09-18 : troisième niveau de repli, entre `find_products` (pg_trgm) et
+`browse_catalog` (dernier recours). Voir
+`medusa-golden-market/docs/superpowers/specs/2026-09-17-recherche-semantique-produits-design.md`
+pour le contexte complet (pourquoi une vraie recherche vectorielle a été ajoutée alors que
+`browse_catalog` avait été délibérément préféré aux embeddings le 2026-09-15 : anticiper la
+croissance du catalogue, `browse_catalog` ne scale pas au-delà de quelques centaines de produits).
+
+**Input** : `query` (String, `$fromAI`, "Termes de recherche du client, en langage naturel").
+
+**Description côté workflow principal** :
+```
+Recherche vectorielle de repli. N'utilise ce tool QUE si find_products a échoué deux fois de
+suite (recherche initiale + réessai avec terme simplifié) pour la même demande du client, AVANT
+d'essayer browse_catalog : renvoie les produits les plus proches sémantiquement de la demande,
+même en cas de synonyme ou de description approximative. Si ce tool ne renvoie rien de pertinent,
+essaie alors browse_catalog en tout dernier recours.
+```
+
+**Node `Semantic Search Medusa Catalog`** (HTTP GET, défensif — `onError:
+"continueErrorOutput"` au niveau racine → `Semantic Search Error Fallback` en cas d'échec) :
+```
+{MEDUSA_BACKEND_URL[_PRODUCTION]}/store/products-semantic-search?q={{ $json.query }}&limit=8
+Header: x-publishable-api-key: {MEDUSA_PUBLISHABLE_KEY[_PRODUCTION]}
+```
+Route Medusa dédiée (`apps/backend/src/api/store/products-semantic-search/route.ts`) : embed la
+requête via l'API OpenAI (`text-embedding-3-small`), cherche les plus proches voisins dans la
+table `product_embedding` (pgvector, index HNSW, distance cosinus), même logique de
+disponibilité/confidentialité de stock que les autres routes. Pas de seuil de similarité codé en
+dur : renvoie toujours le top-8, c'est le modèle IA qui juge de la pertinence parmi les candidats.
+Embeddings maintenus à jour par un subscriber Medusa (`product.created`/`product.updated`), pas
+par ce workflow.
+
+**Node `Format Result`** — même format que `browse_catalog`, mais uniquement pour les candidats
+renvoyés par la recherche vectorielle (pas tout le catalogue).
+
+**Vérifié en conditions réelles (webhook signé, 2026-09-18)** : trois tours de conversation test
+envoyés avec des formulations sans recoupement lexical avec les titres produits ("affûter mes
+lames de cuisine émoussées" → Aiguiseur de couteaux, "tube de dentifrice qui traîne" → support
+roulant) - les deux ont abouti à une réponse produit correcte (prix, lien, stock) sans erreur,
+mais résolus par `find_products` seul (le modèle infère souvent un terme de recherche déjà
+pertinent avant même d'appeler le tool, donc `find_products` réussit plus souvent qu'attendu en
+première intention). Le tool `search_products_semantic` lui-même n'a pas été observé invoqué dans
+ces trois tours - la route sous-jacente a été vérifiée directement par `curl` sur staging et
+production (`?q=serpilliere` renvoie bien "Seau à roulettes... serpillière" et "Balai-éponge...")
+et le câblage n8n (node, connexion `ai_tool`, prompt) est confirmé sans erreur d'exécution sur les
+trois tours réels - reste à confirmer l'invocation réelle du tool sur un cas plus difficile
+rencontré en production.
 
 #### Tool `place_order` (id `EHll8zkvjwPJRJVz`)
 
