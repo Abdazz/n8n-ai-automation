@@ -61,7 +61,17 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- zéro dès qu'une recherche aboutit. Au-delà du seuil (voir tool
     -- find_products), l'escalade vers un humain est déclenchée par le
     -- workflow lui-même, pas par le jugement du LLM à chaque tour.
-    consecutive_search_misses INTEGER NOT NULL DEFAULT 0
+    consecutive_search_misses INTEGER NOT NULL DEFAULT 0,
+    -- Id de commande Medusa réel (order_...), retenu ici plutôt que confié au
+    -- modèle IA (2026-09-18) : le client ne voit jamais que le display_id
+    -- ("#3"), et seul le texte final visible au client est sauvegardé dans
+    -- l'historique de conversation - le modèle n'a donc aucun moyen de
+    -- retrouver l'order_id réel sur un tour séparé de celui où place_order a
+    -- été appelé. get_payment_instructions et mark_payment_reported lisent
+    -- cette colonne (par conversation_id, valeur fixe jamais fournie par le
+    -- modèle) au lieu d'exiger un order_id en paramètre AI. Mis à jour par
+    -- place_order à chaque commande créée.
+    last_order_id   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (phone_number);

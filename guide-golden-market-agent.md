@@ -559,8 +559,8 @@ rencontré en production.
 
 #### Tool `place_order` (id `EHll8zkvjwPJRJVz`)
 
-**Input** : `items` (JSON `[{variant_id, quantity}]`), `phone_number`, `first_name`, `address_1`,
-`city`, `provider_id`.
+**Input** : `items` (JSON `[{variant_id, quantity}]`), `phone_number` (fixe), `conversation_id`
+(fixe, ajouté le 2026-09-18, voir plus bas), `first_name`, `address_1`, `city`, `provider_id`.
 
 **Description** :
 ```
@@ -576,7 +576,9 @@ immédiat** (`Check COD Allowed`, node `If`) avec un message demandant Orange/Mo
 .../payment-sessions` (`provider_id` fourni par le modèle) → `POST /store/carts/{id}/complete` →
 `POST /admin/orders/{id}` (auth Basic avec `MEDUSA_ADMIN_KEY_*`) pour taguer
 `metadata.source = "whatsapp"` (utilisé par le backend pour choisir le bon template de
-confirmation, voir § 1).
+confirmation, voir § 1). **Depuis le 2026-09-18**, une branche parallèle (`Save Order Id`, node
+Postgres, `onError: "continueErrorOutput"`, ne bloque jamais la réponse client) écrit aussi
+`conversations.last_order_id` — voir l'explication complète sous `mark_payment_reported`.
 
 `provider_id` valides à ce jour : `pp_cash-on-delivery_cash-on-delivery`,
 `pp_orange-money-manual_*`, `pp_moov-money-manual_*` (préfixes utilisés par
@@ -586,15 +588,45 @@ dans l'admin Medusa, Réglages → Régions → Burkina Faso → Fournisseurs de
 
 #### Tool `get_payment_instructions` (id `DKlNw9FbVGWdhToy`)
 
-**Input** : `order_id` (repris du résultat de `place_order`).
+**Input** : `conversation_id` (fixe, remplace `order_id` depuis le 2026-09-18 — voir plus bas).
 
-`GET /store/orders/{order_id}?fields=display_id,total,currency_code,*payment_collections.payments`
-puis message adapté au `provider_id` réel de la commande (COD Ouagadougou / Orange Money / Moov
-Money / repli générique).
+Lit `conversations.last_order_id` (node Postgres `Get Last Order Id`) avant d'appeler `GET
+/store/orders/{order_id}?fields=display_id,total,currency_code,*payment_collections.payments` —
+si `last_order_id` est vide (branche `If Has Last Order` → `No Recent Order`), répond que la
+commande est introuvable sans planter. Message final adapté au `provider_id` réel de la commande
+(COD Ouagadougou / Orange Money / Moov Money / repli générique).
 
 #### Tool `mark_payment_reported` (id `kBEyWGZdSLcI9EOI`)
 
-**Input** : `order_id`, `payment_reference` (optionnel, preuve donnée par le client).
+**Input** : `conversation_id` (fixe, remplace `order_id` depuis le 2026-09-18), `payment_reference`
+(optionnel, `$fromAI`, preuve donnée par le client).
+
+**⚠️ Bug corrigé le 2026-09-18, trouvé en simulant une vraie conversation complète jusqu'à la
+commande** : `order_id` était auparavant un paramètre `$fromAI` (comme `get_payment_instructions`).
+Or le client ne voit jamais l'`order_id` réel (`order_...`), seulement le `display_id` ("#3"), et
+seul le texte final visible au client est sauvegardé dans l'historique de conversation (§ 2.4/2.8)
+— le modèle n'avait donc **aucun moyen** de fournir un `order_id` valide sur un tour séparé de
+celui où `place_order` avait été appelé, quelle que soit sa fiabilité. Symptôme observé : au lieu
+d'appeler `mark_payment_reported`, le modèle relançait tout le flux `find_products` → `place_order`
+→ `get_payment_instructions`, créant une **commande en double** à chaque paiement signalé.
+**Corrigé en éliminant complètement la dépendance à la mémoire du modèle** : nouvelle colonne
+`conversations.last_order_id` (voir `schema.sql`), écrite par `place_order` (`Save Order Id`),
+lue par `get_payment_instructions`/`mark_payment_reported` via `conversation_id` — une valeur fixe
+comme `phone_number`, jamais fournie par le modèle. Même pattern que
+`consecutive_search_misses`/`find_products`. **Prompt système renforcé en même temps** : interdit
+explicitement de rappeler `place_order` pour une commande déjà créée dans la conversation.
+**Vérifié en conditions réelles** (conversation complète simulée, webhook signé, jusqu'à une vraie
+commande annulée après coup) : un seul `place_order` par conversation, `mark_payment_reported`
+retrouve et met à jour la bonne commande.
+
+**Limite résiduelle observée, pas corrigée** : Groq (modèle principal, voir Anomalie n°1) a parfois
+rappelé `mark_payment_reported` deux fois pour le même message client (comportement de retry déjà
+documenté ailleurs, voir HANDOFF.md 2026-09-07) ; le second appel, s'il ne repasse pas
+`payment_reference`, écrase la référence enregistrée par `null` dans `metadata.whatsapp_payment_reference`
+— la commande reste correctement rattachée (pas de doublon), seule la référence textuelle peut se
+perdre. Pas de fix appliqué : la notification `escalation_alert` envoyée au propriétaire contient
+déjà la référence au moment de l'appel, donc l'info n'est pas perdue, juste absente de la commande
+elle-même si ce cas se présente.
 
 `POST /admin/orders/{order_id}` (Basic Auth admin) pour taguer
 `metadata.whatsapp_payment_reference`, puis notification automatique au propriétaire via le
