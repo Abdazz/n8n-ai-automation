@@ -86,18 +86,13 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
   d'appeler le tool — c'est du prompt, pas un commentaire.
 - **Body des HTTP Request vers Meta : toujours `{{ JSON.stringify({...}) }}`**, jamais du JSON littéral
   avec `{{ }}` inséré — casse dès que la réponse contient un retour à ligne, une apostrophe courbe ou un emoji.
-- **⚠️ Anomalie identifiée le 2026-09-15, corrigée puis DÉLIBÉRÉMENT ANNULÉE le jour même : le modèle
-  principal du node `AI Agent` est `Groq Chat Model` (`openai/gpt-oss-120b`, branché en index 0),
-  Claude Sonnet 5 n'étant que le fallback (index 1)** — c'est l'inverse de l'intention documentée
-  historiquement dans le guide (Claude en principal, Groq en secours ponctuel). Un incident déjà
-  documenté dans `medusa-golden-market/HANDOFF.md` (2026-09-07) montre Groq boucler sur des
-  reformulations fautives d'une recherche produit avant de trouver le bon terme — probable cause
-  principale des problèmes de qualité de conversation signalés par le propriétaire. **L'inversion a été
-  appliquée en prod puis annulée dans la même session car le propriétaire n'a pas de crédit Anthropic
-  disponible pour le moment** (Claude en principal ferait échouer le premier appel à chaque tour). **Ne
-  pas réinverser sans vérifier d'abord que du crédit Anthropic est disponible** — voir
-  `medusa-golden-market/HANDOFF.md`, entrée du 2026-09-15, pour le détail de la manip (import/export
-  CLI + redémarrage du conteneur).
+- **Modèle IA de l'AI Agent : `Anthropic Chat Model` (`claude-sonnet-5`) en principal (index 0),
+  `Groq Chat Model` (`openai/gpt-oss-120b`) en fallback (index 1)** depuis le 2026-09-23 (était
+  inversé du 2026-09-15 au 2026-09-23 faute de crédit Anthropic). Pour changer l'ordre : export CLI
+  `n8n export:workflow`, modifier les `index` de `ai_languageModel` dans `connections`,
+  `import:workflow` + `update:workflow --active=true` + `docker restart golden_market_n8n` (détail
+  dans le guide, Anomalie n°1). Avant de mettre Claude en principal, vérifier que le crédit
+  Anthropic est disponible, sinon le premier appel échoue à chaque tour.
 - Mise en production par le bouton **Publish**.
 - **⚠️ `onError: "continueErrorOutput"` va au niveau racine du node (sœur de `id`/`name`/`type`),
   PAS dans `parameters`** — mal placé, n8n l'ignore sans avertissement à l'import, et le node se

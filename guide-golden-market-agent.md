@@ -46,23 +46,18 @@
 - [x] Synchro catalogue Medusa → Meta Commerce Catalog opérationnelle (pubs dynamiques
       Facebook/Instagram, catalogue natif WhatsApp) — voir `medusa-golden-market/HANDOFF.md`
 
-## ⚠️ Anomalies connues (état au 2026-09-15, n°2/3/5/6 corrigées, n°1 délibérément en attente)
+## ⚠️ Anomalies connues (état au 2026-09-23, n°1/2/3/5/6 corrigées)
 
-1. **Le modèle IA principal de l'AI Agent est Groq (`openai/gpt-oss-120b`), pas Claude — délibérément,
-   pour le moment.** Dans le node `AI Agent` du workflow `Golden Market Sales Automation Workflow`
-   (`i6KGA9BvK9unjxxj`), la connexion `ai_languageModel` a `Groq Chat Model` en **index 0**
-   (principal) et `Anthropic Chat Model` (`claude-sonnet-5`) en **index 1** (fallback) — c'est
-   l'inverse de l'intention d'origine (voir § Fallback multi-provider plus bas). Groq est un
-   modèle open-weight nettement moins fiable en suivi d'instructions et en reformulation d'appel
-   de tool (incident documenté ci-dessous, § Historique des correctifs, 2026-09-07) et probable
-   cause principale des retours négatifs sur la qualité de conversation. **Testé en sens inverse le
-   2026-09-15 (Claude en principal) puis annulé le jour même : le propriétaire n'avait pas de
-   crédit Anthropic disponible, ce qui aurait fait échouer le premier appel à chaque tour.**
-   Ne réinverser qu'après avoir vérifié que du crédit Anthropic est disponible — voir
-   `medusa-golden-market/HANDOFF.md`, entrée du 2026-09-15, pour la procédure (export/import CLI
-   `n8n export:workflow`/`import:workflow` + `update:workflow --active=true` + redémarrage du
-   conteneur `golden_market_n8n`, nécessaire pour que le changement s'applique réellement au
-   process en cours).
+1. ~~Le modèle IA principal de l'AI Agent était Groq, pas Claude.~~ **Corrigé le 2026-09-23** :
+   `Anthropic Chat Model` (`claude-sonnet-5`) est désormais en **index 0** (principal) de la
+   connexion `ai_languageModel` du node `AI Agent` (`i6KGA9BvK9unjxxj`), `Groq Chat Model`
+   (`openai/gpt-oss-120b`) en **index 1** (fallback). Crédit Anthropic vérifié avant le swap
+   (appel réel de 1 token avec la credential `Anthropic account` de n8n → HTTP 200). Procédure :
+   `n8n export:workflow` → inversion des deux index → `import:workflow` →
+   `update:workflow --active=true` → `docker restart golden_market_n8n`. Vérifié par webhook signé
+   (numéro fictif, conversation supprimée après coup) : seul `Anthropic Chat Model` apparaît dans
+   les données d'exécution, Groq n'est pas appelé. Si le crédit Anthropic s'épuise, le fallback
+   Groq prend le relais automatiquement (`needsFallback: true`).
 2. ~~Aucune extraction du champ `referral` de Meta.~~ **Corrigé le 2026-09-15.**
    `message_text` (node `Edit Fields`) préfixe maintenant le message avec le contexte
    pub/catalogue (`headline`, `body`, `source_url`) quand `messages[0].referral` est présent —
@@ -158,7 +153,7 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
 [Postgres : récupérer historique messages, ORDER BY seq (SQL_query_2)]
         │
         ▼
-[AI Agent (Groq principal / Claude fallback — voir Anomalie n°1)] ◄────────┐
+[AI Agent (Claude principal / Groq fallback)] ◄───────────────────────────┐
         │                                                                   │
         ├─ find_products ────────────────────────────────────────────────┤
         ├─ place_order ───────────────────────────────────────────────────┤
@@ -359,9 +354,9 @@ message client par l'agent).
 
 ### 2.5 AI Agent node
 
-**Chat Model principal** : `Groq Chat Model` (`openai/gpt-oss-120b`) — voir **Anomalie n°1**,
-ce devrait être Claude Sonnet 5 en principal.
-**Fallback** : `Anthropic Chat Model` (`claude-sonnet-5`).
+**Chat Model principal** : `Anthropic Chat Model` (`claude-sonnet-5`) — depuis le 2026-09-23,
+voir Anomalie n°1.
+**Fallback** : `Groq Chat Model` (`openai/gpt-oss-120b`).
 
 **System prompt actuel** (`options.systemMessage` du node `AI Agent`) :
 
@@ -619,7 +614,7 @@ explicitement de rappeler `place_order` pour une commande déjà créée dans la
 commande annulée après coup) : un seul `place_order` par conversation, `mark_payment_reported`
 retrouve et met à jour la bonne commande.
 
-**Limite résiduelle observée, pas corrigée** : Groq (modèle principal, voir Anomalie n°1) a parfois
+**Limite résiduelle observée, pas corrigée** : Groq (modèle principal jusqu'au 2026-09-23, voir Anomalie n°1) a parfois
 rappelé `mark_payment_reported` deux fois pour le même message client (comportement de retry déjà
 documenté ailleurs, voir HANDOFF.md 2026-09-07) ; le second appel, s'il ne repasse pas
 `payment_reference`, écrase la référence enregistrée par `null` dans `metadata.whatsapp_payment_reference`
@@ -696,8 +691,9 @@ colonne `seq` pour l'ordre réel — voir § 2.4).
 Le node **AI Agent** a un second connecteur Chat Model pour la résilience (crédit épuisé, quota,
 panne d'un provider) — **intention d'origine : Claude Sonnet 5 en principal, Groq
 `openai/gpt-oss-120b` en secours ponctuel seulement** (moins fiable en suivi d'instructions/
-tool-calling, acceptable en fallback, pas comme modèle principal). **État réel en prod au
-2026-09-15 : inversé, voir Anomalie n°1.**
+tool-calling, acceptable en fallback, pas comme modèle principal). **Conforme à cette intention
+en prod depuis le 2026-09-23** (inversé du 2026-09-15 au 2026-09-23 faute de crédit Anthropic,
+voir Anomalie n°1).
 
 ---
 
@@ -735,6 +731,8 @@ production ayant façonné le workflow actuel :
   être au niveau racine du node, pas dans `parameters`, sans quoi n8n l'ignore sans avertissement
   (voir Piège critique en tête de § 2.6) — plusieurs des correctifs du jour ont dû être redéployés
   une deuxième fois une fois ce piège compris.
+- **2026-09-23** — Claude Sonnet 5 remis en modèle principal de l'AI Agent, Groq en fallback
+  (Anomalie n°1 corrigée, crédit Anthropic de nouveau disponible et vérifié avant le swap).
 
 ---
 
