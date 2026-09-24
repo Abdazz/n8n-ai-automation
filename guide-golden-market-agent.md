@@ -15,8 +15,11 @@
 - [x] Webhook GET (vérification Meta) + POST (réception messages, signature HMAC sur le corps brut)
 - [x] Historique de conversation (Postgres `conversations`/`messages`) branché à l'AI Agent
 - [x] AI Agent configuré (system prompt + modèle Anthropic + fallback Groq)
-- [x] **6 tools actifs**, tous testés en production : `find_products`, `browse_catalog`,
-      `place_order`, `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`
+- [x] **8 tools actifs**, tous testés en production : `find_products`, `search_products_semantic`,
+      `browse_catalog`, `send_product_images`, `place_order`, `get_payment_instructions`,
+      `mark_payment_reported`, `escalate_to_human`
+- [x] **Envoi des photos produit au client** sur simple demande (`send_product_images`, ajouté le
+      2026-09-24, § 2.6) — jusqu'à 5 photos jpeg/png envoyées directement dans WhatsApp
 - [x] `find_products`/`place_order` parlent directement au **Store API Medusa réel**
       (catalogue, paniers, commandes) — plus de duplication de catalogue en base n8n
 - [x] Recherche produit tolérante aux fautes de frappe (`/store/products-fuzzy-search`, pg_trgm)
@@ -156,6 +159,8 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
 [AI Agent (Claude principal / Groq fallback)] ◄───────────────────────────┐
         │                                                                   │
         ├─ find_products ────────────────────────────────────────────────┤
+        ├─ search_products_semantic / browse_catalog ───────────────────┤
+        ├─ send_product_images (envoie les photos directement au client) ┤
         ├─ place_order ───────────────────────────────────────────────────┤
         ├─ get_payment_instructions ─────────────────────────────────────┤
         ├─ mark_payment_reported ────────────────────────────────────────┤
@@ -373,7 +378,8 @@ Règles strictes :
 - Paiement à la réception : c'est TOUJOURS le client qui remet l'argent en espèces au livreur, jamais l'inverse. Ne dis jamais que le livreur remet ou rend de l'argent au client. Formule toujours ainsi : « vous réglerez / vous remettrez X FCFA en espèces au livreur ».
 - WhatsApp n'affiche PAS les tableaux markdown (barres |, tirets ---) : ne les utilise JAMAIS.
 - Quand tu présentes des produits trouvés par find_products : pour chaque produit, une ligne avec le nom et le prix, suivie du lien produit fourni par le tool (partage-le tel quel, c'est une URL cliquable), avec une courte phrase descriptive si utile. Jamais de tableau, une entrée par produit.
-- L'id variante interne (variant_xxx) fourni par find_products sert UNIQUEMENT à appeler place_order plus tard — ne l'affiche JAMAIS au client, même à côté du lien produit.
+- L'id variante interne (variant_xxx) fourni par find_products sert UNIQUEMENT à appeler place_order ou send_product_images — ne l'affiche JAMAIS au client, même à côté du lien produit.
+- Si le client demande à voir des photos ou images d'un produit, utilise send_product_images avec l'id variante interne de ce produit : les photos lui sont envoyées directement sur WhatsApp. Ensuite réponds très brièvement (ex : « Voici les photos 👆 ») sans recopier de liens d'images. Si le tool indique un échec, partage le lien produit à la place.
 - Le niveau de stock (quantité exacte, nombre d'unités) est une information interne strictement confidentielle — ne communique JAMAIS de chiffre de stock au client, même s'il le demande explicitement. Tu peux seulement dire si un produit est disponible ou en rupture de stock.
 - Si le client répond par un message qui n'apporte AUCUNE information nouvelle à ce que tu viens de demander (ex : « Ok », « D'accord », « 👍 »), ne reformule PAS et ne redonne PAS la liste complète que tu viens d'envoyer — réponds juste très brievement (ex : « Bien ! Je reste en attente de ces informations. ») et attends sa réponse. Ne redemande la liste complète que si le client semble avoir oublié ce qui lui a été demandé ou le redemande explicitement.
 - Le téléphone du client (déjà connu, c'est son numéro WhatsApp) est l'identifiant réel de la commande — ne redemande jamais d'email, ce n'est jamais nécessaire.
@@ -383,6 +389,7 @@ Règles strictes :
 - Si le client signale avoir payé (référence de transaction ou capture d'écran), utilise mark_payment_reported.
 - Ton : chaleureux, professionnel, réponses courtes adaptées à WhatsApp (pas de pavés).
 - Langue : français, sauf si le client écrit dans une autre langue.
+- Tout le texte que tu écris est envoyé tel quel au client sur WhatsApp : écris UNIQUEMENT le message qui lui est destiné. N'écris JAMAIS ton raisonnement, tes intentions (« je vais lui demander… ») ni de commentaire sur le client à la troisième personne (« le client n'a pas précisé… »).
 ```
 
 Chaque règle correspond à un incident réel corrigé en production (voir Historique des
@@ -551,6 +558,47 @@ production (`?q=serpilliere` renvoie bien "Seau à roulettes... serpillière" et
 et le câblage n8n (node, connexion `ai_tool`, prompt) est confirmé sans erreur d'exécution sur les
 trois tours réels - reste à confirmer l'invocation réelle du tool sur un cas plus difficile
 rencontré en production.
+
+#### Tool `send_product_images` (id `SndPrdImgs7kQ2xa`, ajouté le 2026-09-24)
+
+Envoie directement au client, dans WhatsApp, les vraies photos d'un produit quand il demande à le
+voir. **Input** : `variant_id` (Let the model define — le même id variante interne que pour
+`place_order`, donné par `find_products`/`search_products_semantic`/`browse_catalog`, donc aucun
+changement nécessaire à ces tools), `phone_number` (fixe, `{{ $('Edit Fields').item.json.from }}`).
+
+**Description côté workflow principal** : à appeler UNIQUEMENT quand le client demande des
+photos/images d'un produit précis ; chercher d'abord le produit avec `find_products` s'il n'est pas
+identifié ; ne jamais recopier les liens d'images dans la réponse. Règle correspondante dans le
+prompt système (réponse brève type « Voici les photos 👆 », repli sur le lien produit en cas
+d'échec).
+
+```
+When Executed by Another Workflow (variant_id, phone_number)
+  → Fetch Product Images (GET /store/products?variants.id={variant_id}&fields=title,*images,
+      bascule staging/prod via MEDUSA_ENV ; échec → Fetch Error Fallback)
+  → Prepare Images (Code : tri par rank, filtre jpeg/png, max 5, un item par image,
+      légende = titre du produit sur la 1re seulement ; aucun produit/aucune image → item {result})
+  → Has Images (If $json.link existe)
+       true  → Send WhatsApp Image (POST /messages type "image" par lien, batching 1 item /
+                 700 ms pour garder l'ordre, onError continueRegularOutput)
+               → Summarize (compte les réponses Meta avec un wamid → "N photo(s) envoyée(s)…")
+       false → No Images Result (renvoie le message d'explication au modèle)
+```
+
+- **Seuls jpeg et png** sont acceptés par WhatsApp Cloud API pour un message image (le webp y est
+  réservé aux stickers). Les 59 photos fournisseur Alibaba du catalogue étaient en webp : converties
+  en jpeg côté Medusa le 2026-09-24 (`apps/backend/src/scripts/convert-webp-images-to-jpeg.ts`,
+  `medusa-golden-market`) et le script d'import Alibaba convertit désormais lui-même. Le filtre du
+  node `Prepare Images` reste en garde-fou.
+- **Piège n8n** : `URL` (constructeur global) n'existe pas dans le bac à sable des nodes Code
+  (task runner) → `ReferenceError`. Premier déploiement cassé pour cette raison ; utiliser des
+  opérations de chaîne (`split(/[?#]/)`) plutôt que `new URL()`.
+- Les photos partent **pendant** l'exécution du tool, donc **avant** le message texte de l'agent
+  (ordre naturel dans WhatsApp). Elles ne sont pas enregistrées dans `messages` : seul le texte de
+  l'agent l'est.
+- Envoi à un numéro inexistant : Meta renvoie quand même un `wamid` (l'échec arrive plus tard,
+  en accusé de statut) — un test par webhook signé sur numéro fictif valide donc la mécanique mais
+  pas la réception réelle.
 
 #### Tool `place_order` (id `EHll8zkvjwPJRJVz`)
 
@@ -733,6 +781,10 @@ production ayant façonné le workflow actuel :
   une deuxième fois une fois ce piège compris.
 - **2026-09-23** — Claude Sonnet 5 remis en modèle principal de l'AI Agent, Groq en fallback
   (Anomalie n°1 corrigée, crédit Anthropic de nouveau disponible et vérifié avant le swap).
+- **2026-09-24** — nouveau tool `send_product_images` (§ 2.6) ; conversion des photos webp du
+  catalogue en jpeg côté Medusa (WhatsApp refuse le webp) ; règle ajoutée au prompt système après
+  avoir observé Claude écrire son raisonnement dans la réponse (« Le client n'a pas précisé…, je
+  vais lui demander… ») — tout le texte produit est envoyé tel quel au client.
 
 ---
 

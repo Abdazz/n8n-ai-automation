@@ -78,7 +78,8 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
 - **7 tools actifs**, chacun un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
   par son propre node *Call n8n Workflow Tool* sous le AI Agent : `find_products`, `place_order`,
   `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`, `browse_catalog` (ajouté
-  2026-09-15), `search_products_semantic` (ajouté 2026-09-18, voir guide § 2.6). Cascade de recherche
+  2026-09-15), `search_products_semantic` (ajouté 2026-09-18, voir guide § 2.6), `send_product_images` (ajouté
+  2026-09-24 : envoie les photos jpeg/png d'un produit au client, voir guide § 2.6). Cascade de recherche
   produit : `find_products` (pg_trgm) → `search_products_semantic` (embeddings pgvector) →
   `browse_catalog` en tout dernier recours. (`check_stock`, `get_price`, `create_order` et l'ancien
   `place_order` supprimés en base le 2026-09-15, cf. « Pièges connus ».)
