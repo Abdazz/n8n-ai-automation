@@ -787,6 +787,22 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
   succès = succès.
 - Le template `escalation_alert` attend **3** paramètres (numéro, raison, référence).
 
+### 2.10 Photos affichées dans l'admin (2026-09-27)
+
+- `messages.attachments` (JSONB `[{"type":"image","url":"..."}]`) : lu par l'admin Medusa
+  (vignettes cliquables dans la conversation).
+- **Photos du client** : `Binary To Base64` renomme le fichier (`client-photo-<aléatoire>.jpg`) et
+  prépare l'en-tête de l'API Admin Medusa, puis `Upload Client Photo` (`POST /admin/uploads`,
+  `onError: continueRegularOutput`) copie la photo dans le stockage public Medusa ; l'URL suit
+  `Override Message Text With Vision` / `Vision Error Fallback` → `Final Message.attachments` →
+  sauvegarde. ⚠️ `Buffer` n'existe pas dans les **expressions** n8n (401 si l'en-tête y est calculé) :
+  le calculer dans un nœud Code.
+- **Photos envoyées par l'agent** : `send_product_images` met les liens réellement acceptés par Meta
+  dans `conversations.pending_attachments` (`Store Pending Photos`) ; la sauvegarde du tour
+  (`Execute a SQL query`) les rattache à la réponse de l'agent puis vide la colonne (sinon elles
+  apparaîtraient avant la demande du client, le tool s'exécutant avant la sauvegarde).
+- Photos antérieures au 2026-09-27 : non conservées (seule la description existe).
+
 ### Fallback multi-provider (résilience)
 
 Le node **AI Agent** a un second connecteur Chat Model pour la résilience (crédit épuisé, quota,
