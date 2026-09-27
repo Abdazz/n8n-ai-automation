@@ -66,6 +66,8 @@ services:
 
       # --- Confirmation de commande client (webhook Medusa -> n8n) ---
       N8N_ORDER_CONFIRMATION_WEBHOOK_SECRET: ${N8N_ORDER_CONFIRMATION_WEBHOOK_SECRET}
+      # --- Reprise manuelle depuis l'admin Medusa (webhook Medusa -> n8n) ---
+      N8N_ADMIN_ACTIONS_WEBHOOK_SECRET: ${N8N_ADMIN_ACTIONS_WEBHOOK_SECRET}
 
       # --- Medusa Store API (commande directe via WhatsApp) ---
       # MEDUSA_ENV bascule tous les workflows entre staging et production ;
