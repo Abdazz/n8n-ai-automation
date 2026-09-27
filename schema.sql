@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (phone_numbe
 CREATE TABLE IF NOT EXISTS messages (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     conversation_id  UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    role             TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    role             TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'human')),
     content          TEXT NOT NULL,
     whatsapp_msg_id  TEXT,                      -- id du message côté Meta, pour idempotence
     seq              BIGSERIAL,                  -- ordre d'insertion réel : deux lignes d'un même tour partagent le même created_at (même transaction), donc created_at seul ne peut pas les départager de façon fiable
@@ -149,3 +149,16 @@ INSERT INTO products (name, description, price, stock_qty) VALUES
     ('Exemple Produit 1', 'Description du produit 1', 15000, 10),
     ('Exemple Produit 2', 'Description du produit 2', 25000, 5)
 ON CONFLICT DO NOTHING;
+
+-- Reprise manuelle des conversations depuis l'admin Medusa (2026-09-27, voir
+-- medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-manuelle-design.md).
+-- status = 'escalated' signifie désormais "un humain a la main, l'IA se tait".
+-- human_last_action_at : dernière prise de main / envoi manuel / escalade
+-- (base du délai de 2 h avant reprise par l'IA). owner_alerted_at : dernière
+-- alerte WhatsApp au propriétaire pour cette conversation (plafond 30 min).
+-- role 'human' : message écrit par le propriétaire depuis l'admin.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS human_last_action_at TIMESTAMPTZ;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_alerted_at TIMESTAMPTZ;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_role_check;
+ALTER TABLE messages ADD CONSTRAINT messages_role_check
+    CHECK (role IN ('user', 'assistant', 'system', 'human'));
