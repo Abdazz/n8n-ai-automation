@@ -44,6 +44,8 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
   `place_order` parlent au Store/Admin API Medusa. `MEDUSA_ENV` bascule tous les workflows
   staging/production d'un coup. Ajouter une variable demande de la déclarer **aussi** dans le bloc
   `environment:` du service n8n, puis `docker compose up -d`.
+- `N8N_ADMIN_ACTIONS_WEBHOOK_SECRET` (injecté) : secret partagé avec Medusa pour le workflow
+  `Admin - actions conversation` (reprise manuelle depuis l'admin, guide § 2.9).
 - **Purement documentaire** (saisies comme credentials dans l'UI n8n, jamais injectées) :
   `ANTHROPIC_API_KEY`, Groq, Telegram.
 - `.env.example` est en retard sur le compose (il manque `WHATSAPP_APP_SECRET`, `OWNER_WHATSAPP_NUMBER`
@@ -57,7 +59,8 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
   n'est pas unique, donc chaque réexécution duplique les produits de test.
 - `CREATE EXTENSION pg_trgm` doit rester **avant** l'index GIN trgm (commit `e49f988`).
 - **Tables encore actives** : `conversations` (une ligne par `phone_number` E.164, `status`
-  `active`/`closed`/`escalated` — `escalated` = reprise humaine) ; `messages` (index unique partiel sur
+  `active`/`closed`/`escalated` — `escalated` = un humain a la main, l'IA se tait ; colonnes
+  `human_last_action_at`/`owner_alerted_at`, voir guide § 2.9) ; `messages` (index unique partiel sur
   `whatsapp_msg_id` = **mécanisme d'idempotence** face aux redéliveries Meta, toute insertion passe par
   cet id ; colonne `seq BIGSERIAL` pour un ordre d'historique fiable — `created_at` seul ne départage pas
   deux lignes du même tour, insérées dans la même transaction). Ces deux tables sont aussi lues en lecture

@@ -18,6 +18,9 @@
 - [x] **8 tools actifs**, tous testés en production : `find_products`, `search_products_semantic`,
       `browse_catalog`, `send_product_images`, `place_order`, `get_payment_instructions`,
       `mark_payment_reported`, `escalate_to_human`
+- [x] **Reprise manuelle depuis l'admin Medusa** (2026-09-27, § 2.9) : le propriétaire prend la
+      main sur une conversation (l'IA se tait), répond lui-même, relance hors fenêtre 24 h, rend la
+      main ; l'IA reprend seule si le client réécrit plus de 2 h après la dernière action humaine
 - [x] **Envoi des photos produit au client** sur simple demande (`send_product_images`, ajouté le
       2026-09-24, § 2.6) — jusqu'à 5 photos jpeg/png envoyées directement dans WhatsApp
 - [x] `find_products`/`place_order` parlent directement au **Store API Medusa réel**
@@ -150,7 +153,16 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
 [Edit Fields : from / message_text / whatsapp_msg_id]
         │
         ▼
+[Final Message : texte client final (après description photo/vocal/vidéo)]
+        │
+        ▼
 [Postgres : trouver ou créer conversation (SQL_query_1)]
+        │
+        ▼
+[Decide Handler → Route By Handler]   (§ 2.9)
+   ├─ human  → enregistrer le message seul + alerte propriétaire (max 1 / 30 min) → FIN (l'IA se tait)
+   ├─ resume → status 'active' puis IA (avec note interne de reprise)
+   └─ ai     → suite normale
         │
         ▼
 [Postgres : récupérer historique messages, ORDER BY seq (SQL_query_2)]
@@ -744,6 +756,37 @@ la réponse contient un retour à la ligne, une apostrophe courbe ou un emoji.
 Node Postgres, insère la ligne `user` et la ligne `assistant` dans la même transaction (`messages`,
 colonne `seq` pour l'ordre réel — voir § 2.4).
 
+### 2.9 Reprise manuelle depuis l'admin Medusa (2026-09-27)
+
+Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-manuelle-design.md`.
+
+- **`conversations.status = 'escalated'` = un humain a la main, l'IA se tait.** Posé par la prise
+  de main dans l'admin, par tout envoi manuel, par `escalate_to_human` (qui ne posait aucun statut
+  avant le 2026-09-27) et par le garde-fou de `find_products`.
+- Colonnes `human_last_action_at` (dernière action humaine ou escalade, base du délai de 2 h) et
+  `owner_alerted_at` (dernière alerte au propriétaire, plafond 30 min). Rôle `human` dans
+  `messages` pour les réponses écrites depuis l'admin ; présenté à l'IA dans l'historique comme
+  message de l'assistant préfixé « [Message de l'équipe Golden Market] ».
+- **Workflow principal** : `Decide Handler` (Code, `onError` → IA, fail-open) calcule le mode :
+  `human` (escalated et dernière action < 2 h) → `Save Client Message Only` → `Should Alert Owner`
+  → `Alert Owner` (template `escalation_alert` : numéro, extrait du message, lien
+  `https://golden-market.co/app/whatsapp-conversations?phone=…`) → `Check Alert Sent` (wamid
+  présent) → `Mark Owner Alerted` ; `resume` (≥ 2 h) → `Resume AI` (status active, compteur de
+  recherches remis à 0) puis IA avec une note interne ; `ai` → inchangé.
+- **Workflow `Admin - actions conversation`** (id `AdmConvAction7Qx`, `POST
+  /webhook/admin-conversation-action`, en-tête `x-admin-actions-secret` =
+  `N8N_ADMIN_ACTIONS_WEBHOOK_SECRET`) : actions `take_over`, `hand_back`, `send_text` (refus
+  `window_expired` si le dernier message client date de plus de 24 h), `send_reengagement`
+  (template `reprise_conversation`, id Meta `1757148805539141`, catégorie UTILITY, soumis le
+  2026-09-27). Réponses `{ok, message, warning}` ou `{ok:false, error_code, message}` (400, 401,
+  404, 409, 500, 502). Seul Medusa l'appelle.
+- ⚠️ **Piège n8n (2.33) confirmé ici** : le nœud HTTP Request renvoie souvent l'erreur Meta sur sa
+  sortie **succès** (`{ error: {...} }`) malgré `onError: "continueErrorOutput"`. Après tout envoi
+  WhatsApp dont on dépend, vérifier explicitement le `wamid` (`$json.messages?.[0]?.id`) avec un
+  nœud If, comme `Check Send Result` / `Check Alert Sent` — ne jamais supposer que la sortie
+  succès = succès.
+- Le template `escalation_alert` attend **3** paramètres (numéro, raison, référence).
+
 ### Fallback multi-provider (résilience)
 
 Le node **AI Agent** a un second connecteur Chat Model pour la résilience (crédit épuisé, quota,
@@ -815,6 +858,10 @@ production ayant façonné le workflow actuel :
   Ouaga, ~24 h ailleurs, jamais de frais chiffrés), ne jamais redemander une information déjà donnée.
   `send_product_images` : toutes les photos (max 10). Tests réels sur le numéro personnel du
   propriétaire (photo, composition, photos, voir avant de payer, localisation, délais) : tous OK.
+- **2026-09-27 (suite)** — reprise manuelle depuis l'admin Medusa (§ 2.9) : l'IA se tait quand un
+  humain a la main (elle continuait de répondre après une escalade, et réescaladait à chaque
+  « Ok »/« Merci » : 4 alertes pour un seul client le 2026-09-26), alerte plafonnée, reprise après
+  2 h, webhook d'actions, template `reprise_conversation`. Scénarios vérifiés par webhooks signés.
 
 ---
 
