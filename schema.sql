@@ -169,3 +169,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_role_check
 -- (copiées dans le stockage de fichiers Medusa sous un nom aléatoire), pour
 -- les afficher dans l'admin Medusa. Tableau JSON [{"type":"image","url":"..."}].
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB;
+-- Photos envoyées par send_product_images pendant le tour en cours : le tool
+-- s'exécute avant l'enregistrement du tour, elles sont donc mises en attente
+-- ici puis rattachées à la réponse de l'agent par le workflow principal
+-- (ordre correct dans l'historique), et la colonne est remise à NULL.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_attachments JSONB;
