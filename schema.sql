@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role             TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'human')),
     content          TEXT NOT NULL,
     whatsapp_msg_id  TEXT,                      -- id du message côté Meta, pour idempotence
+    attachments      JSONB,                      -- pièces jointes affichées dans l'admin : [{"type":"image","url":"..."}]
     seq              BIGSERIAL,                  -- ordre d'insertion réel : deux lignes d'un même tour partagent le même created_at (même transaction), donc created_at seul ne peut pas les départager de façon fiable
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -162,3 +163,9 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_alerted_at TIMESTAMPTZ;
 ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_role_check;
 ALTER TABLE messages ADD CONSTRAINT messages_role_check
     CHECK (role IN ('user', 'assistant', 'system', 'human'));
+
+-- Pièces jointes des messages (2026-09-27) : photos envoyées par l'agent
+-- (send_product_images, liens du catalogue) et photos envoyées par le client
+-- (copiées dans le stockage de fichiers Medusa sous un nom aléatoire), pour
+-- les afficher dans l'admin Medusa. Tableau JSON [{"type":"image","url":"..."}].
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB;
