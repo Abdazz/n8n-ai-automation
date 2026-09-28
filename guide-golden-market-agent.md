@@ -780,6 +780,15 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
   (template `reprise_conversation`, id Meta `1757148805539141`, catégorie UTILITY, soumis le
   2026-09-27). Réponses `{ok, message, warning}` ou `{ok:false, error_code, message}` (400, 401,
   404, 409, 500, 502). Seul Medusa l'appelle.
+- **Action `send_media`** (2026-09-28, spec
+  `medusa-golden-market/docs/superpowers/specs/2026-09-28-whatsapp-chat-medias-design.md`) :
+  corps `{ action, phone_number, text (légende), media: { kind: image|video|audio|document, url,
+  mime_type, filename, size, voice } }`. Le fichier est déjà dans le stockage Medusa (route admin
+  `.../media`, nom `wa-media-<aléatoire>`) : `Send Media` l'envoie **par lien** (`type: kind`,
+  `{ link, caption }`, `filename` pour un document ; **pas de légende sur un audio**, WhatsApp la
+  refuse - l'admin envoie alors le texte à part). Même contrôle de fenêtre 24 h que `send_text`.
+  `Save Human Message` enregistre la pièce jointe (`attachments`, `NULLIF($4, '')::jsonb` : NULL
+  SQL quand il n'y en a pas, jamais un `null` JSON, que la purge ne saurait pas parcourir).
 - ⚠️ **Piège n8n (2.33) confirmé ici** : le nœud HTTP Request renvoie souvent l'erreur Meta sur sa
   sortie **succès** (`{ error: {...} }`) malgré `onError: "continueErrorOutput"`. Après tout envoi
   WhatsApp dont on dépend, vérifier explicitement le `wamid` (`$json.messages?.[0]?.id`) avec un
