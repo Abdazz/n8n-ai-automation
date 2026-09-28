@@ -144,7 +144,7 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
 [Webhook POST whatsapp, rawBody: true]
         │
         ▼
-[Is Real Message] ──(accusé lecture/livraison, pas de messages[])──► [Respond 200 vide]
+[Is Real Message] ──(accusé de statut, pas de messages[])──► [Failed Statuses] ──► [Mark Message Failed]
         │ (vrai message)
         ▼
 [Vérifier signature HMAC sur le corps BRUT]
@@ -964,3 +964,15 @@ number list"**.
       remises)
 - [x] Templates WhatsApp (`escalation_alert`, `order_confirmation_from_whatsapp`) approuvés par
       Meta
+
+### Messages non envoyés (2026-09-28)
+
+Meta accepte un envoi (wamid rendu) puis peut le refuser quelques secondes plus tard par un accusé
+de statut `failed` (ex. 131047 : plus de 24 h depuis le dernier message du client). La branche
+« accusé de statut » de `Is Real Message` passe par `Failed Statuses` (ne garde que les `failed`)
+puis `Mark Message Failed` : `UPDATE messages SET delivery_status = 'failed', delivery_error =
+'code: raison' WHERE whatsapp_msg_id = wamid`. Les accusés sent / delivered / read sont ignorés.
+L'admin Medusa affiche « Non envoyé » avec la raison et considère la fenêtre fermée après un refus
+131047. Limite : les réponses de l'agent IA ne stockent pas leur wamid sortant, leurs refus ne sont
+donc pas rattachés (rare : l'agent répond dans la fenêtre).
+
