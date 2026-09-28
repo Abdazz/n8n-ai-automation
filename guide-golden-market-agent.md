@@ -811,6 +811,22 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
   (`Execute a SQL query`) les rattache à la réponse de l'agent puis vide la colonne (sinon elles
   apparaîtraient avant la demande du client, le tool s'exécutant avant la sauvegarde).
 - Photos antérieures au 2026-09-27 : non conservées (seule la description existe).
+- **Vidéos, vocaux et documents du client** (2026-09-28, spec
+  `medusa-golden-market/docs/superpowers/specs/2026-09-28-whatsapp-chat-medias-design.md`) :
+  `Download Media (Audio)`, `Binary To Base64 (Video)` et `Download Media (Document)` (nouvelle
+  branche `Is Document Message` → `Get Media URL (Document)`) convergent vers `Prepare Client
+  Media` (nom `client-media-<aléatoire>.<ext>`, type, format, nom d'origine, drapeau vocal) →
+  `Upload Client Media` (`POST /admin/uploads`, `continueRegularOutput`) → `Restore Media Binary`
+  (l'upload HTTP remplace l'item : on repasse l'item préparé, binaire compris, pour Whisper et la
+  description vidéo) → `Route After Media Upload` (audio → Whisper, vidéo → Gemini, document →
+  `Override Message Text With Document`). La fonction `clientAttachments()` (copiée dans les nœuds
+  `Override ...` et `Vision Error Fallback`) construit la pièce jointe ; copie en échec →
+  `{ type, url: null, unavailable: true }`. Vérifié le 2026-09-28 par simulation signée (document,
+  vocal parlé transcrit, vidéo décrite, photo inchangée).
+- **Purge 90 jours** (`PurgeClientPhot1`, renommé « Maintenance - purge des médias (90 jours) ») :
+  messages `role IN ('user','human')` uniquement (jamais `assistant`), fichiers dont le nom contient
+  `client-photo-`, `client-media-` ou `wa-media-` uniquement (jamais une photo produit), pièce
+  jointe marquée `elem || {url: null, expired: true}` (type et nom conservés).
 
 ### Fallback multi-provider (résilience)
 
