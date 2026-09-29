@@ -976,3 +976,13 @@ L'admin Medusa affiche « Non envoyé » avec la raison et considère la fenêtr
 131047. Limite : les réponses de l'agent IA ne stockent pas leur wamid sortant, leurs refus ne sont
 donc pas rattachés (rare : l'agent répond dans la fenêtre).
 
+### Messages automatiques dans l'historique (2026-09-29)
+
+Le webhook générique (workflow « Order Confirmation from website ») enregistre, après un envoi réussi,
+le message dans la conversation du destinataire (créée si besoin) : branche `Prepare Template Log` →
+`Get Template Text` (corps du modèle lu chez Meta, variables {{n}} remplacées) → `Log Template Message`
+(`role = 'assistant'`, `template_name`, `whatsapp_msg_id`). Jamais `account_verification_code` (code à
+usage unique). L'agent voit donc le message auquel le client répond. Le workflow principal enregistre
+aussi le wamid sortant des réponses de l'agent (`Execute a SQL query`, paramètre $6) : leurs refus Meta
+sont désormais rattachés (« Non envoyé »).
+

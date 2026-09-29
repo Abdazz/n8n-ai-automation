@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments      JSONB,                      -- pièces jointes affichées dans l'admin : [{"type":"image","url":"..."}]
     delivery_status  TEXT,                       -- 'failed' : message refusé par Meta après l'envoi (accusé de statut)
     delivery_error   TEXT,                       -- "code: raison" de Meta, ex. "131047: ... 24 hours ..."
+    template_name    TEXT,                       -- modèle Meta d'un message automatique (confirmation, livraison...), sinon NULL
     seq              BIGSERIAL,                  -- ordre d'insertion réel : deux lignes d'un même tour partagent le même created_at (même transaction), donc created_at seul ne peut pas les départager de façon fiable
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -99,6 +100,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_whatsapp_id ON messages (whatsapp
 -- Bases créées avant le 2026-09-28 : colonnes des messages non envoyés.
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_error TEXT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS template_name TEXT;
 
 -- ============================================================
 -- ORDERS — commandes en cours / passées
