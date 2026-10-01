@@ -994,3 +994,11 @@ Le 2026-09-29, deux vidéos client n'ont pas été décrites : Gemini (`gemini-3
 dit au client ne pas pouvoir la visionner. `Describe Video (Vision)`, `Describe Image (Vision)` et
 `Transcribe Audio (Whisper)` réessaient désormais 3 fois (5 s d'écart) avant la sortie d'erreur
 (`Vision Error Fallback`).
+
+Secours (2026-10-01, suite) : si `Describe Video (Vision)` échoue encore après ses 3 essais, sa
+sortie d'erreur part vers `Describe Video (Vision, secours)` (modèle `gemini-3.5-flash`, 2 essais ;
+la vidéo est relue dans `Route After Media Upload`). `gemini-2.5-flash` n'est plus disponible pour
+cette clé (404) ; `gemini-3.8-flash` était lui aussi surchargé lors du test. En dernier recours,
+`Vision Error Fallback` remplace le texte par une consigne pour l'agent : prévenir le client que
+l'équipe va regarder / écouter le média, puis appeler `escalate_to_human` (photo, vidéo, vocal ;
+le propriétaire voit le média dans l'admin).
