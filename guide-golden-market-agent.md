@@ -986,3 +986,11 @@ usage unique). L'agent voit donc le message auquel le client répond. Le workflo
 aussi le wamid sortant des réponses de l'agent (`Execute a SQL query`, paramètre $6) : leurs refus Meta
 sont désormais rattachés (« Non envoyé »).
 
+
+### Nouvelles tentatives sur les services médias (2026-10-01)
+
+Le 2026-09-29, deux vidéos client n'ont pas été décrites : Gemini (`gemini-3.6-flash`) répondait
+503 « high demand » et le nœud ne faisait qu'un essai ; l'agent n'a reçu que « [Vidéo reçue] » et a
+dit au client ne pas pouvoir la visionner. `Describe Video (Vision)`, `Describe Image (Vision)` et
+`Transcribe Audio (Whisper)` réessaient désormais 3 fois (5 s d'écart) avant la sortie d'erreur
+(`Vision Error Fallback`).
