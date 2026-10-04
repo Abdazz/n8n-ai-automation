@@ -245,6 +245,7 @@ messages[0].text?.body
   ?? (messages[0].video ? "[Vidéo reçue]" : undefined)
   ?? (messages[0].document ? "[Document reçu]" : undefined)
   ?? (messages[0].location ? "[Position reçue]" : undefined)
+  ?? (messages[0].reaction ? (messages[0].reaction.emoji ? "Réaction : " + messages[0].reaction.emoji : "Réaction retirée") : undefined)
   ?? "[Message reçu, type non pris en charge]"
 ```
 Avant ce correctif, un message non-texte laissait `message_text = undefined` → `NULL` en base →
@@ -394,7 +395,7 @@ Règles strictes :
 - Le paiement à la réception (cash) n'est proposé QUE si le client livre à Ouagadougou. Pour toute autre ville, propose uniquement Orange Money ou Moov Money.
 - Golden Market n'a PAS de boutique physique : la vente se fait uniquement en ligne, avec livraison. Si le client demande où vous êtes, dites-le simplement (boutique en ligne basée à Ouagadougou, livraison partout au Burkina Faso).
 - Si le client veut voir le produit avant de payer : à Ouagadougou, rassure-le clairement — il paie à la livraison, en espèces, après avoir vu le produit. Propose aussi de lui envoyer toutes les photos (send_product_images).
-- Délais de livraison : à Ouagadougou, livraison express le jour même de la commande ; hors Ouagadougou, environ 24 h, selon les compagnies de transport. Ne donne jamais de frais de livraison chiffrés : si le client les demande, dis qu'ils lui seront confirmés avec sa commande.
+- Délais de livraison : à Ouagadougou, livraison express le jour même de la commande ; hors Ouagadougou, environ 24 h, selon les compagnies de transport. Frais de livraison : à Ouagadougou, ne donne jamais de montant (ils sont confirmés avec la commande). Hors Ouagadougou, les frais d'expédition dépendent du produit : pour la serpillière / le balai-éponge auto-essorant, ils sont de 1 500 FCFA, à payer en plus du produit par Orange Money ou Moov Money ; pour tout autre produit, dis que l'équipe lui confirmera le montant.
 - Paiement à la réception : c'est TOUJOURS le client qui remet l'argent en espèces au livreur, jamais l'inverse. Ne dis jamais que le livreur remet ou rend de l'argent au client. Formule toujours ainsi : « vous réglerez / vous remettrez X FCFA en espèces au livreur ».
 - WhatsApp n'affiche PAS les tableaux markdown (barres |, tirets ---) : ne les utilise JAMAIS.
 - Quand tu présentes des produits trouvés par find_products : pour chaque produit, une ligne avec le nom et le prix, suivie du lien produit fourni par le tool (partage-le tel quel, c'est une URL cliquable), avec une courte phrase descriptive si utile. Jamais de tableau, une entrée par produit.
@@ -408,6 +409,8 @@ Règles strictes :
 - Si le client est mécontent, confus après 2 tentatives, ou demande explicitement un humain → utilise escalate_to_human.
 - Un garde-fou automatique existe en plus de ta propre décision : si find_products échoue 4 fois de suite dans la même conversation, le système notifie déjà l'équipe et marque la conversation comme escalade — si le résultat du tool t'indique que c'est arrivé, informe le client qu'une personne va prendre le relais et n'insiste pas sur une nouvelle recherche.
 - Pour finaliser une commande : utilise place_order, puis get_payment_instructions.
+- Paiements Orange Money / Moov Money : un montant légèrement supérieur au prix (environ 1 % de frais de retrait ajoutés par le client, ex. 9 595 FCFA pour 9 500 FCFA) est NORMAL, et plusieurs transferts (produit, puis frais d'expédition) aussi. Ne conteste JAMAIS un paiement et ne demande jamais au client de justifier un montant : c'est l'équipe qui vérifie la réception.
+- Quand le message contient « Reçu de paiement : … » (photo d'un reçu décrite automatiquement) ou une référence de transaction : appelle mark_payment_reported avec la référence et le montant tels qu'ils apparaissent, puis remercie le client et dis-lui que l'équipe confirme la réception très vite. Ne lui redemande pas une référence déjà présente dans la description du reçu. Un reçu par appel : s'il en envoie plusieurs, appelle mark_payment_reported pour chacun.
 - Si le client signale avoir payé (référence de transaction ou capture d'écran) pour une commande déjà créée dans cette conversation, utilise UNIQUEMENT mark_payment_reported — n'appelle JAMAIS place_order à nouveau pour cette même commande, même si tu ne te souviens plus de son order_id (mark_payment_reported le retrouve automatiquement).
 - Ton : chaleureux, professionnel, réponses courtes adaptées à WhatsApp (pas de pavés).
 - Langue : français, sauf si le client écrit dans une autre langue.
@@ -1002,3 +1005,30 @@ cette clé (404) ; `gemini-3.8-flash` était lui aussi surchargé lors du test. 
 `Vision Error Fallback` remplace le texte par une consigne pour l'agent : prévenir le client que
 l'équipe va regarder / écouter le média, puis appeler `escalate_to_human` (photo, vidéo, vocal ;
 le propriétaire voit le média dans l'admin).
+
+### Paiements signalés et reçus de paiement (2026-10-04)
+
+Constaté sur une vraie commande (client de Kaya, 2026-10-03) : le client a payé 9 595 F (prix + frais
+de retrait Orange Money) puis 1 515 F (expédition), l'agent a contesté les montants, redemandé une
+référence lisible sur les reçus, et le propriétaire n'a jamais été prévenu du paiement.
+
+- `mark_payment_reported` : l'alerte `escalation_alert` était refusée par Meta (131008, premier
+  paramètre vide : `Format Result` ne fournissait pas `phone_number`), et l'agent recevait l'erreur
+  au lieu de la confirmation. Désormais : numéro lu dans `conversations` (`Get Last Order Id`),
+  paramètres jamais vides et sans retour à la ligne, corps construit avec `JSON.stringify` (une
+  référence contenant des guillemets ne casse plus le JSON), `HTTP Request` en
+  `continueRegularOutput` suivi de `Return Result` (l'agent reçoit toujours la confirmation, l'échec
+  est journalisé). Testé sur la commande réelle : alerte acceptée.
+- `Describe Image (Vision)` : un reçu ou une capture de paiement commence par « Reçu de paiement : »
+  et recopie montant, frais, expéditeur, bénéficiaire, date et référence (testé sur les deux reçus
+  Max it réels). Les autres photos restent décrites comme des produits.
+- Consigne : frais de retrait (~1 %) et transferts multiples normaux, ne jamais contester un
+  paiement, appeler `mark_payment_reported` pour chaque reçu ; frais d'expédition hors Ouagadougou
+  du balai-éponge : 1 500 F (les autres produits : confirmés par l'équipe, en attendant un champ
+  « frais d'expédition » par produit dans Medusa).
+- Réactions (emoji posé sur un message, `type: "reaction"`) : enregistrées « Réaction : 👍🏾 »
+  (« Réaction retirée » si l'emoji est retiré), mode `reaction` dans `Decide Handler`, sortie
+  `reaction` de `Route By Handler` vers `Save Reaction` : ni réponse de l'IA ni alerte au
+  propriétaire. Avant, elles apparaissaient « type non pris en charge » et déclenchaient l'IA.
+- Sauvegardes des versions précédentes : `~/n8n-backups/2026-10-04/` sur le VPS.
+
