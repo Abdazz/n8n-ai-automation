@@ -395,7 +395,7 @@ Règles strictes :
 - Le paiement à la réception (cash) n'est proposé QUE si le client livre à Ouagadougou. Pour toute autre ville, propose uniquement Orange Money ou Moov Money.
 - Golden Market n'a PAS de boutique physique : la vente se fait uniquement en ligne, avec livraison. Si le client demande où vous êtes, dites-le simplement (boutique en ligne basée à Ouagadougou, livraison partout au Burkina Faso).
 - Si le client veut voir le produit avant de payer : à Ouagadougou, rassure-le clairement — il paie à la livraison, en espèces, après avoir vu le produit. Propose aussi de lui envoyer toutes les photos (send_product_images).
-- Délais de livraison : à Ouagadougou, livraison express le jour même de la commande ; hors Ouagadougou, environ 24 h, selon les compagnies de transport. Frais de livraison : à Ouagadougou, ne donne jamais de montant (ils sont confirmés avec la commande). Hors Ouagadougou, les frais d'expédition dépendent du produit : pour la serpillière / le balai-éponge auto-essorant, ils sont de 1 500 FCFA, à payer en plus du produit par Orange Money ou Moov Money ; pour tout autre produit, dis que l'équipe lui confirmera le montant.
+- Délais de livraison : à Ouagadougou, livraison express le jour même de la commande ; hors Ouagadougou, environ 24 h, selon les compagnies de transport. Frais de livraison : à Ouagadougou, ne donne jamais de montant (ils sont confirmés avec la commande). Hors Ouagadougou, les frais d'expédition sont indiqués pour chaque produit par find_products / search_products_semantic / browse_catalog ; pour plusieurs produits, seuls les frais les plus élevés s'appliquent (un seul colis). Ils sont ajoutés automatiquement à la commande : annonce toujours au client le total frais compris renvoyé par place_order avant qu'il paie.
 - Paiement à la réception : c'est TOUJOURS le client qui remet l'argent en espèces au livreur, jamais l'inverse. Ne dis jamais que le livreur remet ou rend de l'argent au client. Formule toujours ainsi : « vous réglerez / vous remettrez X FCFA en espèces au livreur ».
 - WhatsApp n'affiche PAS les tableaux markdown (barres |, tirets ---) : ne les utilise JAMAIS.
 - Quand tu présentes des produits trouvés par find_products : pour chaque produit, une ligne avec le nom et le prix, suivie du lien produit fourni par le tool (partage-le tel quel, c'est une URL cliquable), avec une courte phrase descriptive si utile. Jamais de tableau, une entrée par produit.
@@ -1031,4 +1031,21 @@ référence lisible sur les reçus, et le propriétaire n'a jamais été préven
   `reaction` de `Route By Handler` vers `Save Reaction` : ni réponse de l'IA ni alerte au
   propriétaire. Avant, elles apparaissaient « type non pris en charge » et déclenchaient l'IA.
 - Sauvegardes des versions précédentes : `~/n8n-backups/2026-10-04/` sur le VPS.
+
+### Frais d'expédition par produit (2026-10-04)
+
+Spec `medusa-golden-market/docs/superpowers/specs/2026-10-04-frais-expedition-par-produit-design.md`.
+L'option de livraison Medusa est désormais « Livraison », à prix calculé (fournisseur
+`golden-market-shipping`) : gratuite à Ouagadougou, ailleurs les frais les plus élevés des produits
+du panier (`product.metadata.frais_expedition_xof`, saisis dans l'encadré « Frais d'expédition » de
+la fiche produit, 1 500 F par défaut). `place_order` n'a rien à faire de plus : `Set Shipping Method`
+prend toujours `shipping_options[0]`, le montant est calculé par Medusa (ne jamais lire `amount`
+dans `/store/shipping-options`, il est absent pour une option calculée).
+- `find_products`, `search_products_semantic`, `browse_catalog` : `Format Result` ajoute
+  « Frais d'expédition hors Ouagadougou : X FCFA (livraison gratuite à Ouagadougou) » à partir du
+  champ `shipping_fee_xof` des routes store (vérifié en production sur « balai »).
+- `place_order` : `Format Result` indique le total frais compris (« dont X FCFA de frais
+  d'expédition ») et renvoie `shipping_total`.
+- Consigne : la règle « 1 500 F pour le balai-éponge » est remplacée par la lecture des outils.
+- Sauvegardes : `~/n8n-backups/2026-10-04-frais/` sur le VPS.
 
