@@ -835,6 +835,22 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
   n'est plus relu chaque nuit (il bloquait la file au-delà de 500). Les fichiers `wa-media` d'un envoi
   refusé sont supprimés par Medusa (route `media-messages`).
 
+### 2.11 Attribution des ventes aux publicités et marquage des commandes (2026-10-06)
+
+- Workflow principal : `Edit Fields` extrait `referral.ctwa_clid` (publicité « clic vers WhatsApp »)
+  et `SQL_query_1` l'enregistre dans `conversations.ctwa_clid` / `ctwa_clid_at` (jamais effacé par un
+  message sans referral).
+- `place_order` : juste après `Create Cart`, `Get Ad Click Id` (ctwa_clid de moins de 7 jours) puis
+  `Set Cart Metadata` (`POST /store/carts/:id`, `metadata { source: "whatsapp", ctwa_clid }`,
+  `continueRegularOutput`). La commande naît donc marquée « whatsapp » : bon modèle de confirmation
+  (`order_confirmation_from_whatsapp`, auparavant le modèle du site partait car `Set WhatsApp
+  Metadata` passe après la création) et bonne source Meta (`chat`, ou `business_messaging` avec
+  `ctwa_clid` quand le jeton WhatsApp des événements est configuré côté Medusa). Ne jamais poser ces
+  métadonnées juste avant `Complete Cart` : la mise à jour recalcule le panier et peut supprimer la
+  session de paiement.
+- Vérifié le 2026-10-06 : copie de test sur staging (`-e MEDUSA_ENV=staging`, commande annulée) et
+  webhook signé avec `referral.ctwa_clid` (numéro fictif, conversation supprimée ensuite).
+
 ### Fallback multi-provider (résilience)
 
 Le node **AI Agent** a un second connecteur Chat Model pour la résilience (crédit épuisé, quota,
