@@ -181,3 +181,9 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB;
 -- ici puis rattachées à la réponse de l'agent par le workflow principal
 -- (ordre correct dans l'historique), et la colonne est remise à NULL.
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_attachments JSONB;
+
+-- Identifiant de clic d'une publicité « clic vers WhatsApp » (referral.ctwa_clid
+-- du webhook Meta, 2026-10-06) : recopié sur le panier par place_order pour
+-- attribuer la vente à la publicité (API Conversions, business_messaging).
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ctwa_clid TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ctwa_clid_at TIMESTAMPTZ;
