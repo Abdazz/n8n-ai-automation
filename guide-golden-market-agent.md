@@ -829,7 +829,11 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
 - **Purge 90 jours** (`PurgeClientPhot1`, renommé « Maintenance - purge des médias (90 jours) ») :
   messages `role IN ('user','human')` uniquement (jamais `assistant`), fichiers dont le nom contient
   `client-photo-`, `client-media-` ou `wa-media-` uniquement (jamais une photo produit), pièce
-  jointe marquée `elem || {url: null, expired: true}` (type et nom conservés).
+  jointe marquée `elem || {url: null, expired: true}` (type et nom conservés). Depuis le 2026-10-06,
+  `Find Expired Photos` ne sélectionne que les messages ayant au moins une URL de ces préfixes
+  (`a->>'url' ~ '(client-photo-|client-media-|wa-media-)'`) : un message sans aucun de nos fichiers
+  n'est plus relu chaque nuit (il bloquait la file au-delà de 500). Les fichiers `wa-media` d'un envoi
+  refusé sont supprimés par Medusa (route `media-messages`).
 
 ### Fallback multi-provider (résilience)
 
@@ -1038,7 +1042,8 @@ Spec `medusa-golden-market/docs/superpowers/specs/2026-10-04-frais-expedition-pa
 L'option de livraison Medusa est désormais « Livraison », à prix calculé (fournisseur
 `golden-market-shipping`) : gratuite à Ouagadougou, ailleurs les frais les plus élevés des produits
 du panier (`product.metadata.frais_expedition_xof`, saisis dans l'encadré « Frais d'expédition » de
-la fiche produit, 1 500 F par défaut). `place_order` n'a rien à faire de plus : `Set Shipping Method`
+la fiche produit, 1 000 F par défaut depuis le 2026-10-06 ; le repli `p.shipping_fee_xof ?? 1000` des
+outils `browse_catalog`, `find_products`, `search_products_semantic` suit cette valeur). `place_order` n'a rien à faire de plus : `Set Shipping Method`
 prend toujours `shipping_options[0]`, le montant est calculé par Medusa (ne jamais lire `amount`
 dans `/store/shipping-options`, il est absent pour une option calculée).
 - `find_products`, `search_products_semantic`, `browse_catalog` : `Format Result` ajoute
