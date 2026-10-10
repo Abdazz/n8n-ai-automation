@@ -78,11 +78,12 @@ Golden Market, vente WhatsApp au Burkina Faso (XOF, TZ `Africa/Ouagadougou`).
 - **Deux nodes Webhook indépendants** sur le même path `whatsapp` : un `GET` (vérification Meta,
   `hub.challenge`) et un `POST` (messages). Ils ne sont pas reliés. Meta envoie aussi des accusés de
   lecture/livraison sans `messages` — d'où le node `If` en tête de chaîne POST.
-- **7 tools actifs**, chacun un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
+- **9 tools actifs**, chacun un sous-workflow séparé (trigger *When Executed by Another Workflow*), appelé
   par son propre node *Call n8n Workflow Tool* sous le AI Agent : `find_products`, `place_order`,
   `get_payment_instructions`, `mark_payment_reported`, `escalate_to_human`, `browse_catalog` (ajouté
   2026-09-15), `search_products_semantic` (ajouté 2026-09-18, voir guide § 2.6), `send_product_images` (ajouté
-  2026-09-24 : envoie les photos jpeg/png d'un produit au client, voir guide § 2.6). Cascade de recherche
+  2026-09-24 : envoie les photos jpeg/png d'un produit au client, voir guide § 2.6), `report_courier_receipt`
+  (ajouté 2026-10-10 : reçu d'expédition envoyé par un livreur reconnu par son numéro Medusa, guide § 2.12). Cascade de recherche
   produit : `find_products` (pg_trgm) → `search_products_semantic` (embeddings pgvector) →
   `browse_catalog` en tout dernier recours. (`check_stock`, `get_price`, `create_order` et l'ancien
   `place_order` supprimés en base le 2026-09-15, cf. « Pièges connus ».)

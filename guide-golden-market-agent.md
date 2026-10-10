@@ -15,7 +15,7 @@
 - [x] Webhook GET (vérification Meta) + POST (réception messages, signature HMAC sur le corps brut)
 - [x] Historique de conversation (Postgres `conversations`/`messages`) branché à l'AI Agent
 - [x] AI Agent configuré (system prompt + modèle Anthropic + fallback Groq)
-- [x] **8 tools actifs**, tous testés en production : `find_products`, `search_products_semantic`,
+- [x] **9 tools actifs**, tous testés en production : `find_products`, `search_products_semantic`,
       `browse_catalog`, `send_product_images`, `place_order`, `get_payment_instructions`,
       `mark_payment_reported`, `escalate_to_human`
 - [x] **Reprise manuelle depuis l'admin Medusa** (2026-09-27, § 2.9) : le propriétaire prend la
@@ -153,6 +153,9 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
 [Edit Fields : from / message_text / whatsapp_msg_id]
         │
         ▼
+[Identify Courier : livreur Medusa ? (§ 2.12)]
+        │
+        ▼
 [Final Message : texte client final (après description photo/vocal/vidéo)]
         │
         ▼
@@ -176,6 +179,7 @@ Workflow n8n : **`Golden Market Sales Automation Workflow`** (id `i6KGA9BvK9unjx
         ├─ place_order ───────────────────────────────────────────────────┤
         ├─ get_payment_instructions ─────────────────────────────────────┤
         ├─ mark_payment_reported ────────────────────────────────────────┤
+        ├─ report_courier_receipt (reçu envoyé par un livreur, § 2.12) ───┤
         └─ escalate_to_human ────────────────────────────────────────────┘
         │
         ▼
@@ -850,6 +854,46 @@ Spec : `medusa-golden-market/docs/superpowers/specs/2026-09-27-whatsapp-reprise-
   session de paiement.
 - Vérifié le 2026-10-06 : copie de test sur staging (`-e MEDUSA_ENV=staging`, commande annulée) et
   webhook signé avec `referral.ctwa_clid` (numéro fictif, conversation supprimée ensuite).
+
+### 2.12 Livreurs reconnus par l'agent (2026-10-10)
+
+Spec : `medusa-golden-market/docs/superpowers/specs/2026-10-10-agent-livreurs-et-copie-message-livreur-design.md`.
+Les livreurs vivent dans Medusa (table `courier`, page Livraisons > Livreurs) ; aucune copie dans
+la base chat.
+
+- **`Identify Courier`** (Code, entre `Edit Fields` et `Is Image Message`) : lit
+  `GET {MEDUSA_BACKEND_URL[_PRODUCTION]}/admin/couriers` (`this.helpers.httpRequest`, Basic avec
+  `MEDUSA_ADMIN_KEY_*`, délai 5 s), garde les livreurs actifs et compare les **8 derniers
+  chiffres** du numéro. Sortie : item de `Edit Fields` + `courier` (`{ id, name }` ou `null`) et
+  `courier_name`. Toute erreur = `courier: null` (journalisée) : le correspondant est traité comme
+  un client, jamais bloquant. Un livreur désactivé dans Medusa redevient un client.
+- `Final Message` ajoute `courier_name` ; `Describe Image (Vision)` reçoit une consigne différente
+  pour un livreur : ticket / reçu / bordereau d'une compagnie de transport -> « Reçu d'expédition :
+  … » (compagnie, villes, destinataire, référence, montant, date), reçu de paiement -> « Reçu de
+  paiement : … », sinon description simple.
+- `AI Agent` : note interne en tête du message (« ce correspondant n'est PAS un client. C'est NOM,
+  livreur de Golden Market… ») et « Nouveau message du livreur : » ; section **Livreurs de Golden
+  Market** dans le prompt système : jamais de vente, jamais `place_order` /
+  `get_payment_instructions` / `mark_payment_reported` pour un livreur ; ton collègue, très bref ;
+  reçu d'expédition ou de versement -> `report_courier_receipt` puis « Bien reçu, merci 🙏 »,
+  **jamais de vérification ni de commentaire sur les montants** ; question ou problème ->
+  `escalate_to_human` (l'agent n'a pas accès aux commandes pour les livreurs).
+- **Tool `report_courier_receipt`** (sous-workflow `Tool - report_courier_receipt`, id
+  `CourierReceipt7Qx`) : entrées `summary` (`$fromAI`), `conversation_id` (`$('SQL_query_1')`) et
+  `courier_name` (`$('Identify Courier')`, jamais fourni par le modèle). `Get Conversation Phone`
+  -> `Format Alert` (paramètres nettoyés, jamais vides, 300 caractères) -> `Alert Owner` (modèle
+  `escalation_alert` : numéro ; « Reçu d'expédition de NOM (livreur) : résumé » ; lien admin) ->
+  `Check Alert Sent` (wamid) ; sans wamid -> `Email Alert Failure` (Resend). `Return Result` renvoie
+  toujours « Transmis à l'équipe. ». **Ne change pas `conversations.status`** : l'IA continue de
+  répondre au livreur ; « Déposée à la gare », la référence et les frais restent saisis à la main
+  dans l'admin.
+- Vérifié le 2026-10-10 avec le livreur de test « Test Claude » (`+22600000099`, désactivé
+  ensuite) : texte « colis déposé … réf 4521 » -> tool appelé, alerte reçue (wamid), réponse
+  « Bien reçu, merci 🙏 » ; image d'un faux ticket Rahimo téléversée via `POST /{phone_id}/media`
+  -> « Reçu d'expédition : … » lu par la vision, résumé fidèle transmis, montant jamais discuté ;
+  numéro inconnu -> flux client inchangé. Sauvegardes : `~/n8n-backups/2026-10-10/` sur le VPS.
+- Pour tester à nouveau : créer (ou réactiver) un livreur dans Medusa avec le numéro de test, puis
+  webhook signé (§ 4) depuis ce numéro ; l'alerte part réellement sur le téléphone du propriétaire.
 
 ### Fallback multi-provider (résilience)
 
